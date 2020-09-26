@@ -480,22 +480,26 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// Check the expectations of the job before counting active pods, otherwise a new pod can sneak in
 	// and update the expectations after we've retrieved active pods from the store. If a new pod enters
 	// the store after we've checked the expectation, the job sync is just deferred till the next relist.
+	// 判断Job是否能进行sync
 	jobNeedsSync := jm.expectations.SatisfiedExpectations(key)
-
+	// 获取Job所关联的Pod
 	pods, err := jm.getPodsForJob(&job)
 	if err != nil {
 		return false, err
 	}
-
+	//	获取active的Pod
 	activePods := controller.FilterActivePods(pods)
 	active := int32(len(activePods))
+	// 获取succeeded的Pod
 	succeeded, failed := getStatus(pods)
 	conditions := len(job.Status.Conditions)
 	// job first start
+	// 判断是否为第一次运行，如果是第一次运行那么设置StartTime时间
 	if job.Status.StartTime == nil {
 		now := metav1.Now()
 		job.Status.StartTime = &now
 		// enqueue a sync to check if job past ActiveDeadlineSeconds
+		// 判断ActiveDeadlineSeconds是否为空，如果不为空，将key放入队列中。等待ActiveDeadlineSeconds时间后进行sync
 		if job.Spec.ActiveDeadlineSeconds != nil {
 			klog.V(4).Infof("Job %s has ActiveDeadlineSeconds will sync after %d seconds",
 				key, *job.Spec.ActiveDeadlineSeconds)
@@ -507,7 +511,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	jobFailed := false
 	var failureReason string
 	var failureMessage string
-
+	// Pod的failed数是否已经大于Job的failed数
 	jobHaveNewFailure := failed > job.Status.Failed
 	// new failures happen when status does not reflect the failures and active
 	// is different than parallelism, otherwise the previous controller loop
@@ -526,7 +530,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		failureReason = "DeadlineExceeded"
 		failureMessage = "Job was active longer than specified deadline"
 	}
-
+	// 判断如果job处于failed状态，调用deleteJobPods将此Job的所有Pod并发删除
 	if jobFailed {
 		errCh := make(chan error, active)
 		jm.deleteJobPods(&job, activePods, errCh)
@@ -541,7 +545,9 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		// update status values accordingly
 		failed += active
 		active = 0
+		// 更新Job状态
 		job.Status.Conditions = append(job.Status.Conditions, newCondition(batch.JobFailed, failureReason, failureMessage))
+		// 创建相应的事件
 		jm.recorder.Event(&job, v1.EventTypeWarning, failureReason, failureMessage)
 	} else {
 		if jobNeedsSync && job.DeletionTimestamp == nil {
