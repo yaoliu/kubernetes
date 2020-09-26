@@ -65,6 +65,7 @@ var (
 // run their configured workload.
 type Controller struct {
 	kubeClient clientset.Interface
+	//用于对Pod进行操作
 	podControl controller.PodControlInterface
 
 	// To allow injection of updateJobStatus for testing.
@@ -95,8 +96,11 @@ type Controller struct {
 // NewController creates a new Job controller that keeps the relevant pods
 // in sync with their corresponding Job objects.
 func NewController(podInformer coreinformers.PodInformer, jobInformer batchinformers.JobInformer, kubeClient clientset.Interface) *Controller {
+	//创建事件管理器
 	eventBroadcaster := record.NewBroadcaster()
+	//设置事件上报到klog
 	eventBroadcaster.StartStructuredLogging(0)
+	//设置事件上报到Api Server
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
 
 	if kubeClient != nil && kubeClient.CoreV1().RESTClient().GetRateLimiter() != nil {
@@ -385,6 +389,7 @@ func (jm *Controller) worker() {
 }
 
 func (jm *Controller) processNextWorkItem() bool {
+	//从queue队列获取一个Key
 	key, quit := jm.queue.Get()
 	if quit {
 		return false
@@ -463,11 +468,13 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	job := *sharedJob
 
 	// if job was finished previously, we don't want to redo the termination
+	// 判断Job是否已经完成，当Job.Status.Conditions中有Type=Complete，Failed，并且对应的Status=True代表此Job已经完成
 	if IsJobFinished(&job) {
 		return true, nil
 	}
 
 	// retrieve the previous number of retry
+	// 获取Job的重试次数
 	previousRetry := jm.queue.NumRequeues(key)
 
 	// Check the expectations of the job before counting active pods, otherwise a new pod can sneak in
