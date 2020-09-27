@@ -389,13 +389,14 @@ func (jm *Controller) worker() {
 }
 
 func (jm *Controller) processNextWorkItem() bool {
-	//从queue队列获取一个Key
+	//从queue队列获取一个Key Key的格式为{nameSpace}/{jobName}  如default/pi
 	key, quit := jm.queue.Get()
 	if quit {
 		return false
 	}
+	//key用完需要告知队列
 	defer jm.queue.Done(key)
-
+	//将key传给jm.syncJob
 	forget, err := jm.syncHandler(key.(string))
 	if err == nil {
 		if forget {
@@ -448,7 +449,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	defer func() {
 		klog.V(4).Infof("Finished syncing job %q (%v)", key, time.Since(startTime))
 	}()
-
+	//将key切分为namespace和name 如defalut/pi 切分为default和pi pi为JobName default为namespace
 	ns, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return false, err
@@ -456,6 +457,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	if len(ns) == 0 || len(name) == 0 {
 		return false, fmt.Errorf("invalid job key %q: either namespace or name is missing", key)
 	}
+	//根据namespace和name获取Job
 	sharedJob, err := jm.jobLister.Jobs(ns).Get(name)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -516,6 +518,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// new failures happen when status does not reflect the failures and active
 	// is different than parallelism, otherwise the previous controller loop
 	// failed updating status so even if we pick up failure it is not a new one
+	// 活跃数不等于job的并发数 并且重试次数已经大于job.Spec.BackoffLimit
 	exceedsBackoffLimit := jobHaveNewFailure && (active != *job.Spec.Parallelism) &&
 		(int32(previousRetry)+1 > *job.Spec.BackoffLimit)
 
@@ -526,6 +529,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		failureReason = "BackoffLimitExceeded"
 		failureMessage = "Job has reached the specified backoff limit"
 	} else if pastActiveDeadline(&job) {
+		//判断job的运行时间是否已经到了job.spec.ActiveDeadlineSeconds的值 如果是那么这个Job处于failed状态
 		jobFailed = true
 		failureReason = "DeadlineExceeded"
 		failureMessage = "Job was active longer than specified deadline"
@@ -550,6 +554,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		// 创建相应的事件
 		jm.recorder.Event(&job, v1.EventTypeWarning, failureReason, failureMessage)
 	} else {
+		//判断是否可以进行同步
 		if jobNeedsSync && job.DeletionTimestamp == nil {
 			active, manageJobErr = jm.manageJob(activePods, succeeded, &job)
 		}
