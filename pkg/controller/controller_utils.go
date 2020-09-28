@@ -181,11 +181,14 @@ func (r *ControllerExpectations) DeleteExpectations(controllerKey string) {
 // Add/del counts are established by the controller at sync time, and updated as controllees are observed by the controller
 // manager.
 func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) bool {
+	//根据key获取
 	if exp, exists, err := r.GetExpectations(controllerKey); exists {
+		// 判断adds和dels是否大于0
 		if exp.Fulfilled() {
 			klog.V(4).Infof("Controller expectations fulfilled %#v", exp)
 			return true
 		} else if exp.isExpired() {
+			//判断是否超过5min没有更新
 			klog.V(4).Infof("Controller expectations expired %#v", exp)
 			return true
 		} else {

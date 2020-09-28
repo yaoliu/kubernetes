@@ -73,6 +73,7 @@ func (m *BaseControllerRefManager) ClaimObject(obj metav1.Object, match func(met
 			return false, nil
 		}
 		if match(obj) {
+			// 判断是否selector和label是否可以匹配
 			// We already own it and the selector matches.
 			// Return true (successfully claimed) before checking deletion timestamp.
 			// We're still allowed to claim things we already own while being deleted
@@ -81,6 +82,7 @@ func (m *BaseControllerRefManager) ClaimObject(obj metav1.Object, match func(met
 		}
 		// Owned by us but selector doesn't match.
 		// Try to release, unless we're being deleted.
+		//判断controller是否正在被删除
 		if m.Controller.GetDeletionTimestamp() != nil {
 			return false, nil
 		}
@@ -177,6 +179,7 @@ func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.
 	match := func(obj metav1.Object) bool {
 		pod := obj.(*v1.Pod)
 		// Check selector first so filters only run on potentially matching Pods.
+		//job的selector和pod的label进行匹配
 		if !m.Selector.Matches(labels.Set(pod.Labels)) {
 			return false
 		}
@@ -187,6 +190,7 @@ func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.
 		}
 		return true
 	}
+	//使pod和job进行关联 主要更新pod.metadata.ownerReferences
 	adopt := func(obj metav1.Object) error {
 		return m.AdoptPod(obj.(*v1.Pod))
 	}

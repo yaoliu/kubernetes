@@ -421,6 +421,7 @@ func (jm *Controller) getPodsForJob(j *batch.Job) ([]*v1.Pod, error) {
 	}
 	// List all pods to include those that don't match the selector anymore
 	// but have a ControllerRef pointing to this controller.
+	// 获取job对应namespace下的所有pod
 	pods, err := jm.podStore.Pods(j.Namespace).List(labels.Everything())
 	if err != nil {
 		return nil, err
@@ -470,7 +471,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	job := *sharedJob
 
 	// if job was finished previously, we don't want to redo the termination
-	// 判断Job是否已经完成，当Job.Status.Conditions中有Type=Complete，Failed，并且对应的Status=True代表此Job已经完成
+	// 判断Job是否已经完成，当Job.Status.Conditions中有Type=Complete或者Failed，并且对应的Status=True代表此Job已经完成
 	if IsJobFinished(&job) {
 		return true, nil
 	}
@@ -485,14 +486,16 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// 判断Job是否能进行sync
 	jobNeedsSync := jm.expectations.SatisfiedExpectations(key)
 	// 获取Job所关联的Pod
+	// 使用job的selector获取可以匹配的pod 如果存在孤儿的就进行关联 如果已经关联的如果pod label有变化 那就取消关联
+	// 疑问 1.匹配规则及方式是怎样的 2.如果确定此pod是孤儿pod 关联的条件是什么 3 如何删掉已经变化的
 	pods, err := jm.getPodsForJob(&job)
 	if err != nil {
 		return false, err
 	}
-	//	获取active的Pod
+	//	获取active的Pod 过滤条件 pod.status.phase 不等于success及failed。DeletionTimestamp=空
 	activePods := controller.FilterActivePods(pods)
 	active := int32(len(activePods))
-	// 获取succeeded的Pod
+	// 获取succeeded的Pod pod.status.phase=Succeeded pod.status.phase=Failed
 	succeeded, failed := getStatus(pods)
 	conditions := len(job.Status.Conditions)
 	// job first start
@@ -518,7 +521,9 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// new failures happen when status does not reflect the failures and active
 	// is different than parallelism, otherwise the previous controller loop
 	// failed updating status so even if we pick up failure it is not a new one
-	// 活跃数不等于job的并发数 并且重试次数已经大于job.Spec.BackoffLimit
+	// 判断Job的重试次数已经大于job.Spec.BackoffLimit
+	// 判断Pod的failed数是否已经大于Job的failed数
+	// 判断活跃的pod数是否不等于job所设置的pod的并行数
 	exceedsBackoffLimit := jobHaveNewFailure && (active != *job.Spec.Parallelism) &&
 		(int32(previousRetry)+1 > *job.Spec.BackoffLimit)
 
@@ -529,7 +534,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		failureReason = "BackoffLimitExceeded"
 		failureMessage = "Job has reached the specified backoff limit"
 	} else if pastActiveDeadline(&job) {
-		//判断job的运行时间是否已经到了job.spec.ActiveDeadlineSeconds的值 如果是那么这个Job处于failed状态
+		//判断job的运行时间是否已经到了job.spec.ActiveDeadlineSeconds的值 如果是那么将Job设置failed状态 原因为DeadlineExceeded
 		jobFailed = true
 		failureReason = "DeadlineExceeded"
 		failureMessage = "Job was active longer than specified deadline"
@@ -547,6 +552,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		}
 
 		// update status values accordingly
+		// 将failed的数量设置为active的 将active设置为0
 		failed += active
 		active = 0
 		// 更新Job状态
@@ -554,12 +560,14 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		// 创建相应的事件
 		jm.recorder.Event(&job, v1.EventTypeWarning, failureReason, failureMessage)
 	} else {
-		//判断是否可以进行同步
+		//如果非failed状态 判断是否可以进行同步
 		if jobNeedsSync && job.DeletionTimestamp == nil {
 			active, manageJobErr = jm.manageJob(activePods, succeeded, &job)
 		}
+		//设置完成数
 		completions := succeeded
 		complete := false
+		//如果Completions没有设置 那么只要有大于一个pod运行完成 并且活跃pod=0 就设置该job为complete状态
 		if job.Spec.Completions == nil {
 			// This type of job is complete when any pod exits with success.
 			// Each pod is capable of
@@ -585,6 +593,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 				}
 			}
 		}
+		//如果job完成了 设置job的状态及事件
 		if complete {
 			job.Status.Conditions = append(job.Status.Conditions, newCondition(batch.JobComplete, "", ""))
 			now := metav1.Now()
@@ -601,7 +610,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	if job.Status.Succeeded < succeeded {
 		forget = true
 	}
-
+	// 更新job的状态 将状态更新到apiserver
 	// no need to update the job if the status hasn't changed since last time
 	if job.Status.Active != active || job.Status.Succeeded != succeeded || job.Status.Failed != failed || len(job.Status.Conditions) != conditions {
 		job.Status.Active = active
@@ -630,6 +639,7 @@ func (jm *Controller) deleteJobPods(job *batch.Job, pods []*v1.Pod, errCh chan<-
 	// https://github.com/kubernetes/kubernetes/issues/14602 which might give
 	// some sort of solution to above problem.
 	// kill remaining active pods
+	//并发删除Pod
 	wait := sync.WaitGroup{}
 	nbPods := len(pods)
 	wait.Add(nbPods)
@@ -708,6 +718,7 @@ func getStatus(pods []*v1.Pod) (succeeded, failed int32) {
 func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batch.Job) (int32, error) {
 	var activeLock sync.Mutex
 	active := int32(len(activePods))
+	//获取Job并行数量
 	parallelism := *job.Spec.Parallelism
 	jobKey, err := controller.KeyFunc(job)
 	if err != nil {
