@@ -589,6 +589,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	} else {
 		// 如果非failed状态 判断是否可以进行同步
 		if jobNeedsSync && job.DeletionTimestamp == nil {
+			// manageJob的主要功能就是来根据job配置的 对pod进行对比 达到期望的状态
 			active, manageJobErr = jm.manageJob(activePods, succeeded, &job)
 		}
 		// 设置完成数
@@ -649,7 +650,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		if err := jm.updateHandler(&job); err != nil {
 			return forget, err
 		}
-
+		// 如果job所对应的pod 有failed 并且该job的状态为完成 那么forget=fasle 这个jobKey还需要放回queue里 等待下次sync
 		if jobHaveNewFailure && !IsJobFinished(&job) {
 			// returning an error will re-enqueue Job after the backoff period
 			return forget, fmt.Errorf("failed pod(s) detected for job key %q", key)
@@ -886,7 +887,8 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 			}
 			wait.Wait()
 			// any skipped pods that we never attempted to start shouldn't be expected.
-			// diff-batchsize = 还剩下多少pod没有进行创建
+			// 计算剩余未执行的pods数量，并更新ControllerExpectations的adds值
+			// 统计这次分批创建pods有失败的情况，则不在处理后续未执行的pods
 			skippedPods := diff - batchSize
 			if errorCount < len(errCh) && skippedPods > 0 {
 				klog.V(2).Infof("Slow-start failure. Skipping creation of %d pods, decrementing expectations for job %q/%q", skippedPods, job.Namespace, job.Name)
