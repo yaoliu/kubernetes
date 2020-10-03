@@ -189,7 +189,7 @@ func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) boo
 			klog.V(4).Infof("Controller expectations fulfilled %#v", exp)
 			return true
 		} else if exp.isExpired() {
-			//判断是否超过5min没有更新
+			// 判断是否超过5min没有更新
 			klog.V(4).Infof("Controller expectations expired %#v", exp)
 			return true
 		} else {

@@ -48,6 +48,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/utils/integer"
 )
+
 // 状态更新重试次数
 const statusUpdateRetries = 3
 
@@ -123,14 +124,14 @@ func NewController(podInformer coreinformers.PodInformer, jobInformer batchinfor
 		podControl: controller.RealPodControl{
 			KubeClient: kubeClient,
 			// 事件记录器
-			Recorder:   eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
+			Recorder: eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
 		},
 		// 期望值维护
 		expectations: controller.NewControllerExpectations(),
 		// workqueue队列
-		queue:        workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(DefaultJobBackOff, MaxJobBackOff), "job"),
+		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(DefaultJobBackOff, MaxJobBackOff), "job"),
 		// 事件记录器
-		recorder:     eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
+		recorder: eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
 	}
 	// watch job add/update/delete等变更 调用对应函数
 	jobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -166,7 +167,7 @@ func (jm *Controller) Run(workers int, stopCh <-chan struct{}) {
 
 	klog.Infof("Starting job controller")
 	defer klog.Infof("Shutting down job controller")
-
+	// 等待pod cache && job cache 是否同步完成
 	if !cache.WaitForNamedCacheSync("job", stopCh, jm.podStoreSynced, jm.jobStoreSynced) {
 		return
 	}
@@ -404,7 +405,7 @@ func (jm *Controller) worker() {
 }
 
 func (jm *Controller) processNextWorkItem() bool {
-	// 从queue队列获取一个jobKey jobKey的格式为{nameSpace}/{jobName} 例如default/pi
+	// 从queue队列获取一个jobKey jobKey的格式为{nameSpace}/{jobName} 例如:default/pi
 	key, quit := jm.queue.Get()
 	if quit {
 		return false
@@ -420,7 +421,7 @@ func (jm *Controller) processNextWorkItem() bool {
 		}
 		return true
 	}
-	// 如果执行失败 打印错误信息 并且把key放回queue里 等待下次sync
+	// 如果执行失败 打印错误信息 并且把jobKey放回queue里 等待下次sync
 	utilruntime.HandleError(fmt.Errorf("Error syncing job: %v", err))
 	jm.queue.AddRateLimited(key)
 
@@ -432,12 +433,13 @@ func (jm *Controller) processNextWorkItem() bool {
 // Note that the returned Pods are pointers into the cache.
 // 获取Job下所有相关的Pod
 func (jm *Controller) getPodsForJob(j *batch.Job) ([]*v1.Pod, error) {
+	// 初始化一个label选择器
 	selector, err := metav1.LabelSelectorAsSelector(j.Spec.Selector)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't convert Job selector: %v", err)
 	}
 	// List all pods to include those that don't match the selector anymore
-	// but have a ControllerRef pointing to this controller.
+	// but have a ControllerRef pointing to this controller./.
 	// 获取job对应namespace下的所有pod
 	pods, err := jm.podStore.Pods(j.Namespace).List(labels.Everything())
 	if err != nil {
@@ -445,6 +447,7 @@ func (jm *Controller) getPodsForJob(j *batch.Job) ([]*v1.Pod, error) {
 	}
 	// If any adoptions are attempted, we should first recheck for deletion
 	// with an uncached quorum read sometime after listing Pods (see #42639).
+	// 重新检查metadata.DeletionTimestamp是否为空 前置条件先根据jobName获取最新的元数据(fresh)和当前的job元数据比较UID是否一致 然后在重新检查
 	canAdoptFunc := controller.RecheckDeletionTimestamp(func() (metav1.Object, error) {
 		fresh, err := jm.kubeClient.BatchV1().Jobs(j.Namespace).Get(context.TODO(), j.Name, metav1.GetOptions{})
 		if err != nil {
@@ -468,7 +471,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	defer func() {
 		klog.V(4).Infof("Finished syncing job %q (%v)", key, time.Since(startTime))
 	}()
-	// 将key切分为namespace和name 如defalut/pi 切分为default和pi pi为JobName default为namespace
+	// 将key切分为namespace和name 例如:defalut/pi 切分为default和pi pi为JobName default为namespace
 	ns, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return false, err
@@ -489,7 +492,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	job := *sharedJob
 
 	// if job was finished previously, we don't want to redo the termination
-	// 判断Job是否已经完成，当Job.Status.Conditions中有Type=Complete或者Failed，并且对应的Status=True代表此Job已经完成
+	// 判断Job是否已经完成 判断条件为Job.Status.Conditions中有Type=Complete或者Failed，Status=True代表此Job已经完成
 	if IsJobFinished(&job) {
 		return true, nil
 	}
@@ -502,15 +505,21 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// and update the expectations after we've retrieved active pods from the store. If a new pod enters
 	// the store after we've checked the expectation, the job sync is just deferred till the next relist.
 	// 判断Job是否能进行sync
+	// 1. 该job的ControlleeExpectations add次数和del次数 都<=0
+	// 2. 该job的ControlleeExpectations 已经超过5min没有更新
+	// 3. 该job的ControlleeExpectations 不存在
+	// 4. 获取该job的ControlleeExpectations失败
 	jobNeedsSync := jm.expectations.SatisfiedExpectations(key)
 	// 获取Job所关联的Pod
-	// 使用job的selector获取可以匹配的pod 如果存在孤儿的就进行关联 如果已经关联的如果pod label有变化 那就取消关联
+	// 使用job的selector获取可以匹配的pod 如果存在孤儿的就进行关联 如果已经关联的 如果pod label有变化 那就取消关联
 	// 疑问 1.匹配规则及方式是怎样的 2.如果确定此pod是孤儿pod 关联的条件是什么 3 如何删掉已经变化的
+	// 1. 使用job的selector和pod的label进行匹配
+	// 2.
 	pods, err := jm.getPodsForJob(&job)
 	if err != nil {
 		return false, err
 	}
-	//获取active的Pod 过滤条件 pod.status.phase 不等于success及failed。DeletionTimestamp=空
+	// 获取active的Pod 过滤条件 pod.status.phase!=success及failed。DeletionTimestamp=空
 	activePods := controller.FilterActivePods(pods)
 	active := int32(len(activePods))
 	// 获取succeeded的Pod pod.status.phase=Succeeded pod.status.phase=Failed
@@ -539,12 +548,12 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// new failures happen when status does not reflect the failures and active
 	// is different than parallelism, otherwise the previous controller loop
 	// failed updating status so even if we pick up failure it is not a new one
-	// 判断Job的重试次数已经大于job.Spec.BackoffLimit
+	// 判断Job的重试次数已经大于job.Spec.BackoffLimit次数 BackoffLimit默认为6次
 	// 判断Pod的failed数是否已经大于Job的failed数
 	// 判断活跃的pod数是否不等于job所设置的pod的并行数
 	exceedsBackoffLimit := jobHaveNewFailure && (active != *job.Spec.Parallelism) &&
 		(int32(previousRetry)+1 > *job.Spec.BackoffLimit)
-
+	// exceedsBackoffLimit = true 或者
 	if exceedsBackoffLimit || pastBackoffLimitOnFailure(&job, pods) {
 		// check if the number of pod restart exceeds backoff (for restart OnFailure only)
 		// OR if the number of failed jobs increased since the last syncJob
@@ -575,17 +584,17 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		active = 0
 		// 更新Job状态
 		job.Status.Conditions = append(job.Status.Conditions, newCondition(batch.JobFailed, failureReason, failureMessage))
-		// 创建相应的事件
+		// 记录相应的事件
 		jm.recorder.Event(&job, v1.EventTypeWarning, failureReason, failureMessage)
 	} else {
-		//如果非failed状态 判断是否可以进行同步
+		// 如果非failed状态 判断是否可以进行同步
 		if jobNeedsSync && job.DeletionTimestamp == nil {
 			active, manageJobErr = jm.manageJob(activePods, succeeded, &job)
 		}
-		//设置完成数
+		// 设置完成数
 		completions := succeeded
 		complete := false
-		//如果Completions没有设置 那么只要有大于一个pod运行完成 并且活跃pod=0 就设置该job为complete状态
+		// 如果没有设置Completions 那么只要有大于一个pod运行完成 并且活跃pod=0 就设置该job为complete状态
 		if job.Spec.Completions == nil {
 			// This type of job is complete when any pod exits with success.
 			// Each pod is capable of
@@ -601,8 +610,10 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 			// success by having that number of successes.  Since we do not
 			// start more pods than there are remaining completions, there should
 			// not be any remaining active pods once this count is reached.
+			// 如果设置了Completions 那>=Completions就代表该Job已经完成
 			if completions >= *job.Spec.Completions {
 				complete = true
+				//如果
 				if active > 0 {
 					jm.recorder.Event(&job, v1.EventTypeWarning, "TooManyActivePods", "Too many active pods running after completion count reached")
 				}
@@ -611,7 +622,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 				}
 			}
 		}
-		//如果job完成了 设置job的状态及事件
+		//如果job完成了 设置job的状态及记录对应事件
 		if complete {
 			job.Status.Conditions = append(job.Status.Conditions, newCondition(batch.JobComplete, "", ""))
 			now := metav1.Now()
@@ -677,12 +688,15 @@ func (jm *Controller) deleteJobPods(job *batch.Job, pods []*v1.Pod, errCh chan<-
 // pastBackoffLimitOnFailure checks if container restartCounts sum exceeds BackoffLimit
 // this method applies only to pods with restartPolicy == OnFailure
 func pastBackoffLimitOnFailure(job *batch.Job, pods []*v1.Pod) bool {
+	// 判断pod的重启策略!=OnFailure
 	if job.Spec.Template.Spec.RestartPolicy != v1.RestartPolicyOnFailure {
 		return false
 	}
+	// 如果pod的重启策略==OnFailure 遍历pod
 	result := int32(0)
 	for i := range pods {
 		po := pods[i]
+		// job重试的次数 = pods InitContainerStatuses RestartCount 和 ContainerStatuses RestartCount
 		if po.Status.Phase == v1.PodRunning || po.Status.Phase == v1.PodPending {
 			for j := range po.Status.InitContainerStatuses {
 				stat := po.Status.InitContainerStatuses[j]
@@ -694,9 +708,11 @@ func pastBackoffLimitOnFailure(job *batch.Job, pods []*v1.Pod) bool {
 			}
 		}
 	}
+	// 如果默认BackoffLimit=0 那么判断pod是否重启次数大于0
 	if *job.Spec.BackoffLimit == 0 {
 		return result > 0
 	}
+	//
 	return result >= *job.Spec.BackoffLimit
 }
 

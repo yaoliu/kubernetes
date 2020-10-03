@@ -66,14 +66,17 @@ func (m *BaseControllerRefManager) CanAdopt() error {
 //
 // No reconciliation will be attempted if the controller is being deleted.
 func (m *BaseControllerRefManager) ClaimObject(obj metav1.Object, match func(metav1.Object) bool, adopt, release func(metav1.Object) error) (bool, error) {
+	// 获取pod.metadata.ownerReferences
 	controllerRef := metav1.GetControllerOfNoCopy(obj)
+	// 如果pod.metadata.ownerReferences不为空 代表这个pod和controller是有关联的
 	if controllerRef != nil {
+		// 判断pod.metadata.ownerReferences.uid 和controller.uid是否一致
 		if controllerRef.UID != m.Controller.GetUID() {
 			// Owned by someone else. Ignore.
 			return false, nil
 		}
+		// 判断selector和label是否可以匹配 如果匹配成功 代表此controller和pod有关联
 		if match(obj) {
-			// 判断是否selector和label是否可以匹配
 			// We already own it and the selector matches.
 			// Return true (successfully claimed) before checking deletion timestamp.
 			// We're still allowed to claim things we already own while being deleted
@@ -82,10 +85,11 @@ func (m *BaseControllerRefManager) ClaimObject(obj metav1.Object, match func(met
 		}
 		// Owned by us but selector doesn't match.
 		// Try to release, unless we're being deleted.
-		//判断controller是否正在被删除
+		// 判断controller是否正在被删除
 		if m.Controller.GetDeletionTimestamp() != nil {
 			return false, nil
 		}
+		// 标记删除
 		if err := release(obj); err != nil {
 			// If the pod no longer exists, ignore the error.
 			if errors.IsNotFound(err) {
@@ -100,15 +104,18 @@ func (m *BaseControllerRefManager) ClaimObject(obj metav1.Object, match func(met
 	}
 
 	// It's an orphan.
+	// 判断该controller正在被删除 或者selector和pod的label不匹配
 	if m.Controller.GetDeletionTimestamp() != nil || !match(obj) {
 		// Ignore if we're being deleted or selector doesn't match.
 		return false, nil
 	}
+	// 判断该pod正在被删除
 	if obj.GetDeletionTimestamp() != nil {
 		// Ignore if the object is being deleted
 		return false, nil
 	}
 	// Selector matches. Try to adopt.
+	// 如果obj是孤儿(没有ownerReferences) 那么进行关联
 	if err := adopt(obj); err != nil {
 		// If the pod no longer exists, ignore the error.
 		if errors.IsNotFound(err) {
@@ -175,11 +182,10 @@ func NewPodControllerRefManager(
 func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.Pod) bool) ([]*v1.Pod, error) {
 	var claimed []*v1.Pod
 	var errlist []error
-
+	// controller的selector和pod的label进行匹配
 	match := func(obj metav1.Object) bool {
 		pod := obj.(*v1.Pod)
 		// Check selector first so filters only run on potentially matching Pods.
-		//job的selector和pod的label进行匹配
 		if !m.Selector.Matches(labels.Set(pod.Labels)) {
 			return false
 		}
@@ -190,14 +196,15 @@ func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.
 		}
 		return true
 	}
-	//使pod和job进行关联 主要更新pod.metadata.ownerReferences
+	// 使pod和controller进行关联 主要更新pod.metadata.ownerReferences 把controller的信息放入ownerReferences
 	adopt := func(obj metav1.Object) error {
 		return m.AdoptPod(obj.(*v1.Pod))
 	}
+	// 标记删除对应的pod
 	release := func(obj metav1.Object) error {
 		return m.ReleasePod(obj.(*v1.Pod))
 	}
-
+	// 遍历所有的pod
 	for _, pod := range pods {
 		ok, err := m.ClaimObject(pod, match, adopt, release)
 		if err != nil {
