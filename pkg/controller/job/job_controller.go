@@ -48,7 +48,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/utils/integer"
 )
-
+// 状态更新重试次数
 const statusUpdateRetries = 3
 
 // controllerKind contains the schema.GroupVersionKind for this controller type.
@@ -64,13 +64,13 @@ var (
 // Controller ensures that all Job objects have corresponding pods to
 // run their configured workload.
 type Controller struct {
-	//用于访问apiserver的client
+	// 用于访问apiserver的client
 	kubeClient clientset.Interface
-	//用于对Pod进行操作 比如创建pod 删除pod
+	// 用于对Pod进行操作 比如创建pod 删除pod
 	podControl controller.PodControlInterface
 
 	// To allow injection of updateJobStatus for testing.
-	// 用于更新job状态
+	// 用于更新job状态的函数
 	updateHandler func(job *batch.Job) error
 	// syncJob
 	syncHandler func(jobKey string) (bool, error)
@@ -84,6 +84,7 @@ type Controller struct {
 	jobStoreSynced cache.InformerSynced
 	// 记录pods的adds次数 del次数
 	// A TTLCache of pod creates/deletes each rc expects to see
+	// 用于维护期望值
 	expectations controller.ControllerExpectationsInterface
 
 	// A store of jobs
@@ -91,11 +92,11 @@ type Controller struct {
 	jobLister batchv1listers.JobLister
 
 	// A store of pods, populated by the podController
-	//用于获取pod元数据
+	// 用于获取pod元数据
 	podStore corelisters.PodLister
 
 	// Jobs that need to be updated
-	//用于存放job数据 syncjob的时候从queue里get一个key进行操作
+	// 用于存放job数据 syncjob的时候从queue里get一个key进行操作
 	queue workqueue.RateLimitingInterface
 	// 用于上报事件
 	recorder record.EventRecorder
@@ -116,18 +117,22 @@ func NewController(podInformer coreinformers.PodInformer, jobInformer batchinfor
 	}
 
 	jm := &Controller{
-		//连接apiserver的client
+		// 连接apiserver的client
 		kubeClient: kubeClient,
-		//管理pod 会使用访问apiserver的client对pod进行操作 如新增 删除 更新
+		// 管理pod 会使用访问apiserver的client对pod进行操作 如新增 删除 更新
 		podControl: controller.RealPodControl{
 			KubeClient: kubeClient,
+			// 事件记录器
 			Recorder:   eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
 		},
+		// 期望值维护
 		expectations: controller.NewControllerExpectations(),
+		// workqueue队列
 		queue:        workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(DefaultJobBackOff, MaxJobBackOff), "job"),
+		// 事件记录器
 		recorder:     eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
 	}
-	//watch job add/update/delete等变更 调用对应函数
+	// watch job add/update/delete等变更 调用对应函数
 	jobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			jm.enqueueController(obj, true)
@@ -139,7 +144,7 @@ func NewController(podInformer coreinformers.PodInformer, jobInformer batchinfor
 	})
 	jm.jobLister = jobInformer.Lister()
 	jm.jobStoreSynced = jobInformer.Informer().HasSynced
-	//watch pod add/update/delete等变更 调用对应函数
+	// watch pod add/update/delete等变更 调用对应函数
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    jm.addPod,
 		UpdateFunc: jm.updatePod,
@@ -165,7 +170,7 @@ func (jm *Controller) Run(workers int, stopCh <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync("job", stopCh, jm.podStoreSynced, jm.jobStoreSynced) {
 		return
 	}
-	//开启workers数的gorutinue 每个gorutinue都调用jm.worker
+	// 开启workers数的gorutinue 每个gorutinue都调用jm.worker
 	for i := 0; i < workers; i++ {
 		go wait.Until(jm.worker, time.Second, stopCh)
 	}
@@ -399,18 +404,18 @@ func (jm *Controller) worker() {
 }
 
 func (jm *Controller) processNextWorkItem() bool {
-	// 从queue队列获取一个Key Key的格式为{nameSpace}/{jobName}  如default/pi
+	// 从queue队列获取一个jobKey jobKey的格式为{nameSpace}/{jobName} 例如default/pi
 	key, quit := jm.queue.Get()
 	if quit {
 		return false
 	}
-	// key用完需要告知队列
+	// jobKey用完需要告知队列
 	defer jm.queue.Done(key)
-	// 将key传给jm.syncJob
+	// 将jobKey传给jm.syncJob
 	forget, err := jm.syncHandler(key.(string))
 	if err == nil {
 		if forget {
-			// 如果执行成功 那么需要从queue里删除key
+			// 如果执行成功 那么需要从queue里删除jobKey
 			jm.queue.Forget(key)
 		}
 		return true
@@ -425,6 +430,7 @@ func (jm *Controller) processNextWorkItem() bool {
 // getPodsForJob returns the set of pods that this Job should manage.
 // It also reconciles ControllerRef by adopting/orphaning.
 // Note that the returned Pods are pointers into the cache.
+// 获取Job下所有相关的Pod
 func (jm *Controller) getPodsForJob(j *batch.Job) ([]*v1.Pod, error) {
 	selector, err := metav1.LabelSelectorAsSelector(j.Spec.Selector)
 	if err != nil {
@@ -457,7 +463,7 @@ func (jm *Controller) getPodsForJob(j *batch.Job) ([]*v1.Pod, error) {
 // it did not expect to see any more of its pods created or deleted. This function is not meant to be invoked
 // concurrently with the same key.
 func (jm *Controller) syncJob(key string) (bool, error) {
-	// startTime 和defer 配合 记录syncJob的耗时
+	// startTime和defer配合记录syncJob的耗时
 	startTime := time.Now()
 	defer func() {
 		klog.V(4).Infof("Finished syncing job %q (%v)", key, time.Since(startTime))
@@ -731,8 +737,9 @@ func getStatus(pods []*v1.Pod) (succeeded, failed int32) {
 func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batch.Job) (int32, error) {
 	var activeLock sync.Mutex
 	active := int32(len(activePods))
-	//获取Job并行数量
+	// 获取Job并行数量
 	parallelism := *job.Spec.Parallelism
+	// 根据job获取jobkey jobkey的格式为 {namespace}/{job} 例如default/pi
 	jobKey, err := controller.KeyFunc(job)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Couldn't get key for job %#v: %v", job, err))
@@ -740,8 +747,9 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 	}
 
 	var errCh chan error
-	// 如果活跃pod数大于并行数 那么需要删除多余的pod
+	// 如果活跃pod数大于并行数 那么需要删除多余的active状态的pod
 	if active > parallelism {
+		// 计算多余pod数量
 		diff := active - parallelism
 		errCh = make(chan error, diff)
 		jm.expectations.ExpectDeletions(jobKey, int(diff))
@@ -749,11 +757,18 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 		// Sort the pods in the order such that not-ready < ready, unscheduled
 		// < scheduled, and pending < running. This ensures that we delete pods
 		// in the earlier stages whenever possible.
-		//进行优先级排序
+		// 进行优先级排序
+		// 1. Unassigned < assigned //按照pod 分配(调度)/未分配(未调度) 到node进行比较
+		// 2. PodPending < PodUnknown < PodRunning //按照pod.status.phase进行比较
+		// 3. Not ready < ready //按照pod是否已经就绪进行比较
+		// 4. Been ready for empty time < less time < more time
+		// 5. Pods with containers with higher restart counts < lower restart counts  //按照pod重启次数进行比较
+		// 6. Empty creation time pods < newer pods < older pods
+		// 按照以上几种优先级对acticepod排序
 		sort.Sort(controller.ActivePods(activePods))
 
 		active -= diff
-		//将多余的pod并发删除掉
+		// 将多余的pod并发删除 按照排序后的active pod 从头进行删除 删除diff个pod
 		wait := sync.WaitGroup{}
 		wait.Add(int(diff))
 		for i := int32(0); i < diff; i++ {
@@ -761,6 +776,7 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 				defer wait.Done()
 				if err := jm.podControl.DeletePod(job.Namespace, activePods[ix].Name, job); err != nil {
 					// Decrement the expected number of deletes because the informer won't observe this deletion
+					// 如果pod删除失败 则需要回滚active值 把失败的pod数量加回来 并且更新jobkey的expectations
 					jm.expectations.DeletionObserved(jobKey)
 					if !apierrors.IsNotFound(err) {
 						klog.V(2).Infof("Failed to delete %v, decremented expectations for job %q/%q", activePods[ix].Name, job.Namespace, job.Name)
@@ -777,7 +793,11 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 		wait.Wait()
 
 	} else if active < parallelism {
-		//如果活跃pod数小于Job设置的并行pod数量 那么需要创建pod 使活跃pod数和job设置的pod数量保持一致
+		// 如果活跃pod(active pod)数小于Job设置的并行pod数量(parallelism) 那么需要创建pod 使活跃pod数和job设置的pod数量保持一致
+		// 主要逻辑为计算出diff值 然后以倍数进行创建diff个pod
+		// 如果job.Spec.Completions==nil succeeded>0  wantActive=active diff = 0
+		// 如果job.Spec.Completions==nil succeeded=0  wantActive=parallelism diff=(parallelism-active)
+		// 如果job.Spec.Completions!=nil diff=(job.Spec.Completions-successed-active)
 		wantActive := int32(0)
 		if job.Spec.Completions == nil {
 			// Job does not specify a number of completions.  Therefore, number active
@@ -819,12 +839,14 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 		// prevented from spamming the API service with the pod create requests
 		// after one of its pods fails.  Conveniently, this also prevents the
 		// event spam that those failures would generate.
+		// 从1开始创建，每次2的倍数的进行创建 例如 1>2>4>8
 		for batchSize := int32(integer.IntMin(int(diff), controller.SlowStartInitialBatchSize)); diff > 0; batchSize = integer.Int32Min(2*batchSize, diff) {
 			errorCount := len(errCh)
 			wait.Add(int(batchSize))
 			for i := int32(0); i < batchSize; i++ {
 				go func() {
 					defer wait.Done()
+					// 创建pod
 					err := jm.podControl.CreatePodsWithControllerRef(job.Namespace, &job.Spec.Template, job, metav1.NewControllerRef(job, controllerKind))
 					if err != nil {
 						if errors.HasStatusCause(err, v1.NamespaceTerminatingCause) {
@@ -836,6 +858,7 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 					if err != nil {
 						defer utilruntime.HandleError(err)
 						// Decrement the expected number of creates because the informer won't observe this pod
+						// 如果pod删除失败 则需要回滚active值 把失败的pod数量减回来 并且创建jobkey的expectations
 						klog.V(2).Infof("Failed creation, decrementing expectations for job %q/%q", job.Namespace, job.Name)
 						jm.expectations.CreationObserved(jobKey)
 						activeLock.Lock()
@@ -847,6 +870,7 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 			}
 			wait.Wait()
 			// any skipped pods that we never attempted to start shouldn't be expected.
+			// diff-batchsize = 还剩下多少pod没有进行创建
 			skippedPods := diff - batchSize
 			if errorCount < len(errCh) && skippedPods > 0 {
 				klog.V(2).Infof("Slow-start failure. Skipping creation of %d pods, decrementing expectations for job %q/%q", skippedPods, job.Namespace, job.Name)

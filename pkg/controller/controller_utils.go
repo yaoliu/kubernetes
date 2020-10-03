@@ -161,6 +161,7 @@ type ControllerExpectations struct {
 
 // GetExpectations returns the ControlleeExpectations of the given controller.
 func (r *ControllerExpectations) GetExpectations(controllerKey string) (*ControlleeExpectations, bool, error) {
+	//从cache里获取
 	exp, exists, err := r.GetByKey(controllerKey)
 	if err == nil && exists {
 		return exp.(*ControlleeExpectations), true, nil
