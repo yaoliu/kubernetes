@@ -757,6 +757,7 @@ func (dsc *DaemonSetsController) getDaemonPods(ds *apps.DaemonSet) ([]*v1.Pod, e
 // Note that returned Pods are pointers to objects in the cache.
 // If you want to modify one, you need to deep-copy it first.
 func (dsc *DaemonSetsController) getNodesToDaemonPods(ds *apps.DaemonSet) (map[string][]*v1.Pod, error) {
+	// 获取DaemonSet所关联的Pod
 	claimedPods, err := dsc.getDaemonPods(ds)
 	if err != nil {
 		return nil, err
@@ -764,13 +765,14 @@ func (dsc *DaemonSetsController) getNodesToDaemonPods(ds *apps.DaemonSet) (map[s
 	// Group Pods by Node name.
 	nodeToDaemonPods := make(map[string][]*v1.Pod)
 	for _, pod := range claimedPods {
+		// 获取pod的nodeName
 		nodeName, err := util.GetTargetNodeName(pod)
 		if err != nil {
 			klog.Warningf("Failed to get target node name of Pod %v/%v in DaemonSet %v/%v",
 				pod.Namespace, pod.Name, ds.Namespace, ds.Name)
 			continue
 		}
-
+		// map格式为 map[nodeName] = []Pod 一个nodeName里包含了多少个pod
 		nodeToDaemonPods[nodeName] = append(nodeToDaemonPods[nodeName], pod)
 	}
 
@@ -880,6 +882,7 @@ func (dsc *DaemonSetsController) podsShouldBeOnNode(
 // syncNodes with a list of pods to remove and a list of nodes to run a Pod of ds.
 func (dsc *DaemonSetsController) manage(ds *apps.DaemonSet, nodeList []*v1.Node, hash string) error {
 	// Find out the pods which are created for the nodes by DaemonSet.
+	// 获取pod和node的关联关系
 	nodeToDaemonPods, err := dsc.getNodesToDaemonPods(ds)
 	if err != nil {
 		return fmt.Errorf("couldn't get node to daemon pod mapping for daemon set %q: %v", ds.Name, err)
@@ -1127,6 +1130,7 @@ func (dsc *DaemonSetsController) updateDaemonSetStatus(ds *apps.DaemonSet, nodeL
 }
 
 func (dsc *DaemonSetsController) syncDaemonSet(key string) error {
+	// startTime和defer配合记录syncDaemonSet的耗时
 	startTime := time.Now()
 	defer func() {
 		klog.V(4).Infof("Finished syncing daemon set %q (%v)", key, time.Since(startTime))
@@ -1259,11 +1263,13 @@ func Predicates(pod *v1.Pod, node *v1.Node, taints []v1.Taint) (fitsNodeName, fi
 
 // NewPod creates a new pod
 func NewPod(ds *apps.DaemonSet, nodeName string) *v1.Pod {
+	// 创建pod 并指定namespace和node
 	newPod := &v1.Pod{Spec: ds.Spec.Template.Spec, ObjectMeta: ds.Spec.Template.ObjectMeta}
 	newPod.Namespace = ds.Namespace
 	newPod.Spec.NodeName = nodeName
 
 	// Added default tolerations for DaemonSet pods.
+	// 设置默认tolerations
 	util.AddOrUpdateDaemonPodTolerations(&newPod.Spec)
 
 	return newPod

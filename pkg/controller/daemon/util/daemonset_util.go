@@ -205,6 +205,7 @@ func GetTargetNodeName(pod *v1.Pod) (string, error) {
 	}
 
 	// Retrieve node name of unscheduled pods from NodeAffinity
+	// 判断pod node的亲和性
 	if pod.Spec.Affinity == nil ||
 		pod.Spec.Affinity.NodeAffinity == nil ||
 		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
