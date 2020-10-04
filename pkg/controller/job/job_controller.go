@@ -98,7 +98,7 @@ type Controller struct {
 	// Jobs that need to be updated
 	// 用于存放job数据 syncjob的时候从queue里get一个Jobkey进行操作
 	queue workqueue.RateLimitingInterface
-	// 用于记录事件
+	// 事件记录器 用于记录事件
 	recorder record.EventRecorder
 }
 
