@@ -85,10 +85,14 @@ var controllerKind = apps.SchemeGroupVersion.WithKind("DaemonSet")
 // DaemonSetsController is responsible for synchronizing DaemonSet objects stored
 // in the system with actual running pods.
 type DaemonSetsController struct {
-	kubeClient    clientset.Interface
+	// 用于访问apiserver的client
+	kubeClient clientset.Interface
+	// 事件记录器
 	eventRecorder record.EventRecorder
-	podControl    controller.PodControlInterface
-	crControl     controller.ControllerRevisionControlInterface
+	// 用于管理pod 会使用访问apiserver的client 对pod进行操作 如新增 删除 更新
+	podControl controller.PodControlInterface
+	// 用于管理历史版本
+	crControl controller.ControllerRevisionControlInterface
 
 	// An dsc is temporarily suspended after creating/deleting these many replicas.
 	// It resumes normal action after observing the watch events for them.
@@ -99,18 +103,22 @@ type DaemonSetsController struct {
 	// used for unit testing
 	enqueueDaemonSet func(ds *apps.DaemonSet)
 	// A TTLCache of pod creates/deletes each ds expects to see
+	// 期望值维护
 	expectations controller.ControllerExpectationsInterface
 	// dsLister can list/get daemonsets from the shared informer's store
+	// 用于获取daemonset元数据
 	dsLister appslisters.DaemonSetLister
 	// dsStoreSynced returns true if the daemonset store has been synced at least once.
 	// Added as a member to the struct to allow injection for testing.
 	dsStoreSynced cache.InformerSynced
 	// historyLister get list/get history from the shared informers's store
+	// 用于获取历史版本元数据
 	historyLister appslisters.ControllerRevisionLister
 	// historyStoreSynced returns true if the history store has been synced at least once.
 	// Added as a member to the struct to allow injection for testing.
 	historyStoreSynced cache.InformerSynced
 	// podLister get list/get pods from the shared informers's store
+	// 用于获取pod元数据
 	podLister corelisters.PodLister
 	// podNodeIndex indexes pods by their nodeName
 	podNodeIndex cache.Indexer
@@ -118,12 +126,14 @@ type DaemonSetsController struct {
 	// Added as a member to the struct to allow injection for testing.
 	podStoreSynced cache.InformerSynced
 	// nodeLister can list/get nodes from the shared informer's store
+	// 用于获取node元数据
 	nodeLister corelisters.NodeLister
 	// nodeStoreSynced returns true if the node store has been synced at least once.
 	// Added as a member to the struct to allow injection for testing.
 	nodeStoreSynced cache.InformerSynced
 
 	// DaemonSet keys that need to be synced.
+	// 队列
 	queue workqueue.RateLimitingInterface
 
 	failedPodsBackoff *flowcontrol.Backoff
@@ -138,6 +148,7 @@ func NewDaemonSetsController(
 	kubeClient clientset.Interface,
 	failedPodsBackoff *flowcontrol.Backoff,
 ) (*DaemonSetsController, error) {
+	// 创建事件管理器
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartStructuredLogging(0)
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
@@ -292,7 +303,7 @@ func (dsc *DaemonSetsController) Run(workers int, stopCh <-chan struct{}) {
 	for i := 0; i < workers; i++ {
 		go wait.Until(dsc.runWorker, time.Second, stopCh)
 	}
-
+	// 每分钟执行一次
 	go wait.Until(dsc.failedPodsBackoff.GC, BackoffGCInterval, stopCh)
 
 	<-stopCh
@@ -1135,11 +1146,12 @@ func (dsc *DaemonSetsController) syncDaemonSet(key string) error {
 	defer func() {
 		klog.V(4).Infof("Finished syncing daemon set %q (%v)", key, time.Since(startTime))
 	}()
-
+	//
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
 	}
+	// 获取daemonset对象
 	ds, err := dsc.dsLister.DaemonSets(namespace).Get(name)
 	if errors.IsNotFound(err) {
 		klog.V(3).Infof("daemon set has been deleted %v", key)
