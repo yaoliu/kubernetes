@@ -75,11 +75,13 @@ func getParentUIDFromJob(j batchv1.Job) (types.UID, bool) {
 func groupJobsByParent(js []batchv1.Job) map[types.UID][]batchv1.Job {
 	jobsByCj := make(map[types.UID][]batchv1.Job)
 	for _, job := range js {
+		// 从job.metadata.OwnerReferences里获取所属controller的UID信息
 		parentUID, found := getParentUIDFromJob(job)
 		if !found {
 			klog.V(4).Infof("Unable to get parent uid from job %s in namespace %s", job.Name, job.Namespace)
 			continue
 		}
+		// 把job放入所属controller里
 		jobsByCj[parentUID] = append(jobsByCj[parentUID], job)
 	}
 	return jobsByCj
@@ -91,11 +93,12 @@ func groupJobsByParent(js []batchv1.Job) map[types.UID][]batchv1.Job {
 // If there were missed times prior to the last known start time, then those are not returned.
 func getRecentUnmetScheduleTimes(cj batchv1beta1.CronJob, now time.Time) ([]time.Time, error) {
 	starts := []time.Time{}
+	//
 	sched, err := cron.ParseStandard(cj.Spec.Schedule)
 	if err != nil {
 		return starts, fmt.Errorf("unparseable schedule: %s : %s", cj.Spec.Schedule, err)
 	}
-
+	// 获取最后一次调度时间 如果为空 那么取cronjob创建时间
 	var earliestTime time.Time
 	if cj.Status.LastScheduleTime != nil {
 		earliestTime = cj.Status.LastScheduleTime.Time
@@ -108,6 +111,7 @@ func getRecentUnmetScheduleTimes(cj batchv1beta1.CronJob, now time.Time) ([]time
 		// CronJob as last known start time.
 		earliestTime = cj.ObjectMeta.CreationTimestamp.Time
 	}
+	// 启动job的期限
 	if cj.Spec.StartingDeadlineSeconds != nil {
 		// Controller is not going to schedule anything below this point
 		schedulingDeadline := now.Add(-time.Second * time.Duration(*cj.Spec.StartingDeadlineSeconds))
@@ -116,6 +120,7 @@ func getRecentUnmetScheduleTimes(cj batchv1beta1.CronJob, now time.Time) ([]time
 			earliestTime = schedulingDeadline
 		}
 	}
+	// 判断是不是在当前时间之后 如果在 那么返回空的
 	if earliestTime.After(now) {
 		return []time.Time{}, nil
 	}
@@ -152,8 +157,9 @@ func getJobFromTemplate(cj *batchv1beta1.CronJob, scheduledTime time.Time) (*bat
 	labels := copyLabels(&cj.Spec.JobTemplate)
 	annotations := copyAnnotations(&cj.Spec.JobTemplate)
 	// We want job names for a given nominal start time to have a deterministic name to avoid the same job being created twice
+	// job名称 cronjobName + hash(Time)
 	name := fmt.Sprintf("%s-%d", cj.Name, getTimeHash(scheduledTime))
-
+	// 生成job 并且设置OwnerReferences为当前的cronjob
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:          labels,
@@ -162,6 +168,7 @@ func getJobFromTemplate(cj *batchv1beta1.CronJob, scheduledTime time.Time) (*bat
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cj, controllerKind)},
 		},
 	}
+	// Pod
 	cj.Spec.JobTemplate.Spec.DeepCopyInto(&job.Spec)
 	return job, nil
 }

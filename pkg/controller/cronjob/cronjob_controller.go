@@ -60,15 +60,21 @@ var controllerKind = batchv1beta1.SchemeGroupVersion.WithKind("CronJob")
 
 // Controller is a controller for CronJobs.
 type Controller struct {
+	// 用于访问apiserver的client
 	kubeClient clientset.Interface
+	// 用于管理job 会使用访问apiserver的client 对job进行操作 如获取 新增 删除 更新
 	jobControl jobControlInterface
-	cjControl  cjControlInterface
+	// 用于管理cronjob 会使用访问apiserver的client 对cronjob进行操作 如更新
+	cjControl cjControlInterface
+	// 用于管理pod 会使用访问apiserver的client 对pod进行操作 如新增 删除 更新
 	podControl podControlInterface
-	recorder   record.EventRecorder
+	// 事件记录器 用于记录事件
+	recorder record.EventRecorder
 }
 
 // NewController creates and initializes a new Controller.
 func NewController(kubeClient clientset.Interface) (*Controller, error) {
+	// 创建事件管理器
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartStructuredLogging(0)
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
@@ -95,6 +101,7 @@ func (jm *Controller) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	klog.Infof("Starting CronJob Manager")
 	// Check things every 10 second.
+	// 每个10秒钟同步一次
 	go wait.Until(jm.syncAll, 10*time.Second, stopCh)
 	<-stopCh
 	klog.Infof("Shutting down CronJob Manager")
@@ -106,6 +113,7 @@ func (jm *Controller) syncAll() {
 	// This guarantees that if we see any Job that got orphaned by the GC orphan finalizer,
 	// we must also see that the parent CronJob has non-nil DeletionTimestamp (see #42639).
 	// Note that this only works because we are NOT using any caches here.
+	// 获取所有的job
 	jobListFunc := func(opts metav1.ListOptions) (runtime.Object, error) {
 		return jm.kubeClient.BatchV1().Jobs(metav1.NamespaceAll).List(context.TODO(), opts)
 	}
@@ -126,10 +134,11 @@ func (jm *Controller) syncAll() {
 	}
 
 	klog.V(4).Infof("Found %d jobs", len(js))
+	// 获取所有的cronJob
 	cronJobListFunc := func(opts metav1.ListOptions) (runtime.Object, error) {
 		return jm.kubeClient.BatchV1beta1().CronJobs(metav1.NamespaceAll).List(context.TODO(), opts)
 	}
-
+	// 处理job 筛选出有controller的job
 	jobsByCj := groupJobsByParent(js)
 	klog.V(4).Infof("Found %d groups", len(jobsByCj))
 	err = pager.New(pager.SimplePageFunc(cronJobListFunc)).EachListItem(context.Background(), metav1.ListOptions{}, func(object runtime.Object) error {
@@ -137,7 +146,9 @@ func (jm *Controller) syncAll() {
 		if !ok {
 			return fmt.Errorf("expected type *batchv1beta1.CronJob, got type %T", cj)
 		}
+		// 将cronjob及对应的job进行同步
 		syncOne(cj, jobsByCj[cj.UID], time.Now(), jm.jobControl, jm.cjControl, jm.recorder)
+		// 清理已经完成的jobs
 		cleanupFinishedJobs(cj, jobsByCj[cj.UID], jm.jobControl, jm.cjControl, jm.recorder)
 		return nil
 	})
@@ -216,9 +227,12 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 	nameForLog := fmt.Sprintf("%s/%s", cj.Namespace, cj.Name)
 
 	childrenJobs := make(map[types.UID]bool)
+	// 遍历所有的job
 	for _, j := range js {
 		childrenJobs[j.ObjectMeta.UID] = true
+		// 遍历cronjob.status.active 判断job是否在active中
 		found := inActiveList(*cj, j.ObjectMeta.UID)
+		// 如果不存在 并且该job不处于finisehd状态 发送对应事件
 		if !found && !IsJobFinished(&j) {
 			recorder.Eventf(cj, v1.EventTypeWarning, "UnexpectedJob", "Saw a job that the controller did not create or forgot: %s", j.Name)
 			// We found an unfinished job that has us as the parent, but it is not in our Active list.
@@ -232,7 +246,9 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 			// in the same namespace "adopt" that job.  ReplicaSets and their Pods work the same way.
 			// TBS: how to update cj.Status.LastScheduleTime if the adopted job is newer than any we knew about?
 		} else if found && IsJobFinished(&j) {
+			// 如果存在 并且该job已经处于finisehd状态 发送对应事件
 			_, status := getFinishedStatus(&j)
+			// 从cronjob.status.active里删除掉
 			deleteFromActiveList(cj, j.ObjectMeta.UID)
 			recorder.Eventf(cj, v1.EventTypeNormal, "SawCompletedJob", "Saw completed job: %s, status: %v", j.Name, status)
 		}
@@ -241,31 +257,32 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 	// Remove any job reference from the active list if the corresponding job does not exist any more.
 	// Otherwise, the cronjob may be stuck in active mode forever even though there is no matching
 	// job running.
+	// 遍历cronjob.status.active 判断job 是否在childrenJobs中 如果不在 那么删除对应job
 	for _, j := range cj.Status.Active {
 		if found := childrenJobs[j.UID]; !found {
 			recorder.Eventf(cj, v1.EventTypeNormal, "MissingJob", "Active job went missing: %v", j.Name)
 			deleteFromActiveList(cj, j.UID)
 		}
 	}
-
+	// 更新cronjob的状态
 	updatedCJ, err := cjc.UpdateStatus(cj)
 	if err != nil {
 		klog.Errorf("Unable to update status for %s (rv = %s): %v", nameForLog, cj.ResourceVersion, err)
 		return
 	}
 	*cj = *updatedCJ
-
+	// 判断cronjob是否被删除
 	if cj.DeletionTimestamp != nil {
 		// The CronJob is being deleted.
 		// Don't do anything other than updating status.
 		return
 	}
-
+	// 判断cronjob是否暂停
 	if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
 		klog.V(4).Infof("Not starting job for %s because it is suspended", nameForLog)
 		return
 	}
-
+	// 获取cronjob的调度时间列表
 	times, err := getRecentUnmetScheduleTimes(*cj, now)
 	if err != nil {
 		recorder.Eventf(cj, v1.EventTypeWarning, "FailedNeedsStart", "Cannot determine if job needs to be started: %v", err)
@@ -273,17 +290,21 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 		return
 	}
 	// TODO: handle multiple unmet start times, from oldest to newest, updating status as needed.
+	// 如果时间列表为空 那么代表目前还不需要被调度
 	if len(times) == 0 {
 		klog.V(4).Infof("No unmet start times for %s", nameForLog)
 		return
 	}
+	// 如果时间列表 大于0 代表有多次时间为满足调度
 	if len(times) > 1 {
 		klog.V(4).Infof("Multiple unmet start times for %s so only starting last one", nameForLog)
 	}
-
+	// 获取最后一次时间
 	scheduledTime := times[len(times)-1]
 	tooLate := false
 	if cj.Spec.StartingDeadlineSeconds != nil {
+		// (scheduledTime + StartingDeadlineSeconds) > now
+		// now - scheduledTime > StartingDeadlineSeconds
 		tooLate = scheduledTime.Add(time.Second * time.Duration(*cj.Spec.StartingDeadlineSeconds)).Before(now)
 	}
 	if tooLate {
@@ -298,6 +319,7 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 		// can see easily that there was a missed execution.
 		return
 	}
+	// 判断cronjob的并发策略 如果策略是Forbid 意味着禁止并发执行Job 所以如果active大于0 那么直接return 跳过这次sync
 	if cj.Spec.ConcurrencyPolicy == batchv1beta1.ForbidConcurrent && len(cj.Status.Active) > 0 {
 		// Regardless which source of information we use for the set of active jobs,
 		// there is some risk that we won't see an active job when there is one.
@@ -311,6 +333,7 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 		klog.V(4).Infof("Not starting job for %s because of prior execution still running and concurrency policy is Forbid", nameForLog)
 		return
 	}
+	// 判断并发策略 是否为replace 那么就删除所有已经存在的job
 	if cj.Spec.ConcurrencyPolicy == batchv1beta1.ReplaceConcurrent {
 		for _, j := range cj.Status.Active {
 			klog.V(4).Infof("Deleting job %s of %s that was still running at next scheduled start time", j.Name, nameForLog)
@@ -325,12 +348,13 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 			}
 		}
 	}
-
+	// 获取Job的模版
 	jobReq, err := getJobFromTemplate(cj, scheduledTime)
 	if err != nil {
 		klog.Errorf("Unable to make Job from template in %s: %v", nameForLog, err)
 		return
 	}
+	// 创建Job
 	jobResp, err := jc.CreateJob(cj.Namespace, jobReq)
 	if err != nil {
 		// If the namespace is being torn down, we can safely ignore
@@ -341,6 +365,7 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 		return
 	}
 	klog.V(4).Infof("Created Job %s for %s", jobResp.Name, nameForLog)
+	// 生成创建Job的事件
 	recorder.Eventf(cj, v1.EventTypeNormal, "SuccessfulCreate", "Created job %v", jobResp.Name)
 
 	// ------------------------------------------------------------------ //
@@ -354,12 +379,14 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 	// scheduled time).
 
 	// Add the just-started job to the status list.
+	// 获取job的ObjectReference 将它添加到cronjob.status.active中
 	ref, err := getRef(jobResp)
 	if err != nil {
 		klog.V(2).Infof("Unable to make object reference for job for %s", nameForLog)
 	} else {
 		cj.Status.Active = append(cj.Status.Active, *ref)
 	}
+	// 更新最后一次调度时间 并且更新cronjob状态
 	cj.Status.LastScheduleTime = &metav1.Time{Time: scheduledTime}
 	if _, err := cjc.UpdateStatus(cj); err != nil {
 		klog.Infof("Unable to update status for %s (rv = %s): %v", nameForLog, cj.ResourceVersion, err)
