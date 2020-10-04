@@ -124,7 +124,7 @@ func getRecentUnmetScheduleTimes(cj batchv1beta1.CronJob, now time.Time) ([]time
 	if earliestTime.After(now) {
 		return []time.Time{}, nil
 	}
-
+	// 计算出所有时间
 	for t := sched.Next(earliestTime); !t.After(now); t = sched.Next(t) {
 		starts = append(starts, t)
 		// An object might miss several starts. For example, if
