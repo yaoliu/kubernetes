@@ -101,7 +101,7 @@ func (jm *Controller) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	klog.Infof("Starting CronJob Manager")
 	// Check things every 10 second.
-	// 每个10秒钟同步一次
+	// 每10秒钟调用一次syncAll
 	go wait.Until(jm.syncAll, 10*time.Second, stopCh)
 	<-stopCh
 	klog.Infof("Shutting down CronJob Manager")
@@ -117,7 +117,7 @@ func (jm *Controller) syncAll() {
 	jobListFunc := func(opts metav1.ListOptions) (runtime.Object, error) {
 		return jm.kubeClient.BatchV1().Jobs(metav1.NamespaceAll).List(context.TODO(), opts)
 	}
-
+	// 以分页的方式获取job
 	js := make([]batchv1.Job, 0)
 	err := pager.New(pager.SimplePageFunc(jobListFunc)).EachListItem(context.Background(), metav1.ListOptions{}, func(object runtime.Object) error {
 		jobTmp, ok := object.(*batchv1.Job)
@@ -138,7 +138,7 @@ func (jm *Controller) syncAll() {
 	cronJobListFunc := func(opts metav1.ListOptions) (runtime.Object, error) {
 		return jm.kubeClient.BatchV1beta1().CronJobs(metav1.NamespaceAll).List(context.TODO(), opts)
 	}
-	// 处理job 筛选出有controller的job
+	// 处理job 筛选出属于CronJob的job map[CronJobUID] = [Job]
 	jobsByCj := groupJobsByParent(js)
 	klog.V(4).Infof("Found %d groups", len(jobsByCj))
 	err = pager.New(pager.SimplePageFunc(cronJobListFunc)).EachListItem(context.Background(), metav1.ListOptions{}, func(object runtime.Object) error {
@@ -146,7 +146,7 @@ func (jm *Controller) syncAll() {
 		if !ok {
 			return fmt.Errorf("expected type *batchv1beta1.CronJob, got type %T", cj)
 		}
-		// 将cronjob及对应的job进行同步
+		// 将cronjob及对应的关联job进行同步
 		syncOne(cj, jobsByCj[cj.UID], time.Now(), jm.jobControl, jm.cjControl, jm.recorder)
 		// 清理已经完成的jobs
 		cleanupFinishedJobs(cj, jobsByCj[cj.UID], jm.jobControl, jm.cjControl, jm.recorder)
@@ -163,6 +163,7 @@ func (jm *Controller) syncAll() {
 func cleanupFinishedJobs(cj *batchv1beta1.CronJob, js []batchv1.Job, jc jobControlInterface,
 	cjc cjControlInterface, recorder record.EventRecorder) {
 	// If neither limits are active, there is no need to do anything.
+	// 判断 如果历史失败Job次数 == 空 和 历史成功Job次数 == 空 那么不需要清理 因为默认不保存历史记录
 	if cj.Spec.FailedJobsHistoryLimit == nil && cj.Spec.SuccessfulJobsHistoryLimit == nil {
 		return
 	}
@@ -172,13 +173,15 @@ func cleanupFinishedJobs(cj *batchv1beta1.CronJob, js []batchv1.Job, jc jobContr
 
 	for _, job := range js {
 		isFinished, finishedStatus := getFinishedStatus(&job)
+		// 如果已经job已经完成 并且是成功状态 那么加入successfulJobs
 		if isFinished && finishedStatus == batchv1.JobComplete {
 			successfulJobs = append(successfulJobs, job)
 		} else if isFinished && finishedStatus == batchv1.JobFailed {
+			// 如果已经job已经完成 并且是失败状态 那么加入failedJobs
 			failedJobs = append(failedJobs, job)
 		}
 	}
-
+	// 如果历史成功Job次数 不为空 那么删除掉 len(所有job) - SuccessfulJobsHistoryLimit
 	if cj.Spec.SuccessfulJobsHistoryLimit != nil {
 		removeOldestJobs(cj,
 			successfulJobs,
@@ -186,7 +189,7 @@ func cleanupFinishedJobs(cj *batchv1beta1.CronJob, js []batchv1.Job, jc jobContr
 			*cj.Spec.SuccessfulJobsHistoryLimit,
 			recorder)
 	}
-
+	// 如果历史失败Job次数 不为空 那么删除掉 len(所有job) - FailedJobsHistoryLimit
 	if cj.Spec.FailedJobsHistoryLimit != nil {
 		removeOldestJobs(cj,
 			failedJobs,
@@ -196,6 +199,7 @@ func cleanupFinishedJobs(cj *batchv1beta1.CronJob, js []batchv1.Job, jc jobContr
 	}
 
 	// Update the CronJob, in case jobs were removed from the list.
+	// 更新cronJob状态
 	if _, err := cjc.UpdateStatus(cj); err != nil {
 		nameForLog := fmt.Sprintf("%s/%s", cj.Namespace, cj.Name)
 		klog.Infof("Unable to update status for %s (rv = %s): %v", nameForLog, cj.ResourceVersion, err)
@@ -204,6 +208,7 @@ func cleanupFinishedJobs(cj *batchv1beta1.CronJob, js []batchv1.Job, jc jobContr
 
 // removeOldestJobs removes the oldest jobs from a list of jobs
 func removeOldestJobs(cj *batchv1beta1.CronJob, js []batchv1.Job, jc jobControlInterface, maxJobs int32, recorder record.EventRecorder) {
+	// 删除历史的Job
 	numToDelete := len(js) - int(maxJobs)
 	if numToDelete <= 0 {
 		return
@@ -211,8 +216,9 @@ func removeOldestJobs(cj *batchv1beta1.CronJob, js []batchv1.Job, jc jobControlI
 
 	nameForLog := fmt.Sprintf("%s/%s", cj.Namespace, cj.Name)
 	klog.V(4).Infof("Cleaning up %d/%d jobs from %s", numToDelete, len(js), nameForLog)
-
+	// 将job根据startTime进行排序
 	sort.Sort(byJobStartTime(js))
+	// 删除job
 	for i := 0; i < numToDelete; i++ {
 		klog.V(4).Infof("Removing job %s from %s", js[i].Name, nameForLog)
 		deleteJob(cj, &js[i], jc, recorder)
@@ -257,7 +263,7 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 	// Remove any job reference from the active list if the corresponding job does not exist any more.
 	// Otherwise, the cronjob may be stuck in active mode forever even though there is no matching
 	// job running.
-	// 遍历cronjob.status.active 判断job 是否在childrenJobs中 如果不在 那么删除对应job
+	// 遍历cronjob.status.active 判断job 是否在childrenJobs中 如果不在 那么从cronjob.status.active删除对应job
 	for _, j := range cj.Status.Active {
 		if found := childrenJobs[j.UID]; !found {
 			recorder.Eventf(cj, v1.EventTypeNormal, "MissingJob", "Active job went missing: %v", j.Name)
@@ -277,7 +283,7 @@ func syncOne(cj *batchv1beta1.CronJob, js []batchv1.Job, now time.Time, jc jobCo
 		// Don't do anything other than updating status.
 		return
 	}
-	// 判断cronjob是否暂停
+	// 判断cronjob Suspend
 	if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
 		klog.V(4).Infof("Not starting job for %s because it is suspended", nameForLog)
 		return

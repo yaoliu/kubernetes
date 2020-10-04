@@ -34,10 +34,11 @@ func startJobController(ctx ControllerContext) (http.Handler, bool, error) {
 	if !ctx.AvailableResources[schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}] {
 		return nil, false, nil
 	}
-	// 初始化JobController ConcurrentJobSyncs代表worker数量
+	// 初始化JobController 并运行 ConcurrentJobSyncs代表worker数量
 	go job.NewController(
 		ctx.InformerFactory.Core().V1().Pods(),
 		ctx.InformerFactory.Batch().V1().Jobs(),
+		// clientOrDie 会生成一个clientset 用于操作资源
 		ctx.ClientBuilder.ClientOrDie("job-controller"),
 	).Run(int(ctx.ComponentConfig.JobController.ConcurrentJobSyncs), ctx.Stop)
 	return nil, true, nil
@@ -47,12 +48,15 @@ func startCronJobController(ctx ControllerContext) (http.Handler, bool, error) {
 	if !ctx.AvailableResources[schema.GroupVersionResource{Group: "batch", Version: "v1beta1", Resource: "cronjobs"}] {
 		return nil, false, nil
 	}
+	// 初始化CronJobController
 	cjc, err := cronjob.NewController(
+		// clientOrDie 会生成一个clientset 用于操作资源
 		ctx.ClientBuilder.ClientOrDie("cronjob-controller"),
 	)
 	if err != nil {
 		return nil, true, fmt.Errorf("error creating CronJob controller: %v", err)
 	}
+	// 运行
 	go cjc.Run(ctx.Stop)
 	return nil, true, nil
 }

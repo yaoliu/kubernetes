@@ -75,13 +75,13 @@ func getParentUIDFromJob(j batchv1.Job) (types.UID, bool) {
 func groupJobsByParent(js []batchv1.Job) map[types.UID][]batchv1.Job {
 	jobsByCj := make(map[types.UID][]batchv1.Job)
 	for _, job := range js {
-		// 从job.metadata.OwnerReferences里获取所属controller的UID信息
+		// 从job.metadata.OwnerReferences里获取kind=CronJob的UID信息
 		parentUID, found := getParentUIDFromJob(job)
 		if !found {
 			klog.V(4).Infof("Unable to get parent uid from job %s in namespace %s", job.Name, job.Namespace)
 			continue
 		}
-		// 把job放入所属controller里
+		// 把job放入所属controller UID里
 		jobsByCj[parentUID] = append(jobsByCj[parentUID], job)
 	}
 	return jobsByCj
