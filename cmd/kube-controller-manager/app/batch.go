@@ -34,6 +34,7 @@ func startJobController(ctx ControllerContext) (http.Handler, bool, error) {
 	if !ctx.AvailableResources[schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}] {
 		return nil, false, nil
 	}
+	// 初始化JobController ConcurrentJobSyncs代表worker数量
 	go job.NewController(
 		ctx.InformerFactory.Core().V1().Pods(),
 		ctx.InformerFactory.Batch().V1().Jobs(),

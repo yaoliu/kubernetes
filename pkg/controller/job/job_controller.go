@@ -67,13 +67,13 @@ var (
 type Controller struct {
 	// 用于访问apiserver的client
 	kubeClient clientset.Interface
-	// 用于对Pod进行操作 比如创建pod 删除pod
+	// 用于管理pod 会使用访问apiserver的client 对pod进行操作 如新增 删除 更新
 	podControl controller.PodControlInterface
 
 	// To allow injection of updateJobStatus for testing.
 	// 用于更新job状态的函数
 	updateHandler func(job *batch.Job) error
-	// syncJob
+	// 核心功能 syncJob
 	syncHandler func(jobKey string) (bool, error)
 	// podStoreSynced returns true if the pod store has been synced at least once.
 	// Added as a member to the struct to allow injection for testing.
@@ -83,9 +83,8 @@ type Controller struct {
 	// Added as a member to the struct to allow injection for testing.
 	// 用于判断job是否同步到cache
 	jobStoreSynced cache.InformerSynced
-	// 记录pods的adds次数 del次数
 	// A TTLCache of pod creates/deletes each rc expects to see
-	// 用于维护期望值
+	// 用于维护期望值 记录pods的adds次数 del次数
 	expectations controller.ControllerExpectationsInterface
 
 	// A store of jobs
@@ -97,31 +96,32 @@ type Controller struct {
 	podStore corelisters.PodLister
 
 	// Jobs that need to be updated
-	// 用于存放job数据 syncjob的时候从queue里get一个key进行操作
+	// 用于存放job数据 syncjob的时候从queue里get一个Jobkey进行操作
 	queue workqueue.RateLimitingInterface
-	// 用于上报事件
+	// 用于记录事件
 	recorder record.EventRecorder
 }
 
 // NewController creates a new Job controller that keeps the relevant pods
 // in sync with their corresponding Job objects.
 func NewController(podInformer coreinformers.PodInformer, jobInformer batchinformers.JobInformer, kubeClient clientset.Interface) *Controller {
-	//创建事件管理器
+	// 创建事件管理器
 	eventBroadcaster := record.NewBroadcaster()
-	//设置事件上报到klog
+	// 设置事件上报到klog
 	eventBroadcaster.StartStructuredLogging(0)
-	//设置事件上报到Api Server
+	// 设置事件上报到Api Server
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
-
+	// 限流策略
 	if kubeClient != nil && kubeClient.CoreV1().RESTClient().GetRateLimiter() != nil {
 		ratelimiter.RegisterMetricAndTrackRateLimiterUsage("job_controller", kubeClient.CoreV1().RESTClient().GetRateLimiter())
 	}
 
 	jm := &Controller{
-		// 连接apiserver的client
+		// 用于访问apiserver的client
 		kubeClient: kubeClient,
-		// 管理pod 会使用访问apiserver的client对pod进行操作 如新增 删除 更新
+		// 用于管理pod 会使用访问apiserver的client 对pod进行操作 如新增 删除 更新
 		podControl: controller.RealPodControl{
+			// 用于访问apiserver的client
 			KubeClient: kubeClient,
 			// 事件记录器
 			Recorder: eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
@@ -133,7 +133,7 @@ func NewController(podInformer coreinformers.PodInformer, jobInformer batchinfor
 		// 事件记录器
 		recorder: eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "job-controller"}),
 	}
-	// watch job add/update/delete等变更 调用对应函数
+	// 监听watch job add/update/delete等事件 并且调用对应事件注册的函数
 	jobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			jm.enqueueController(obj, true)
@@ -145,7 +145,7 @@ func NewController(podInformer coreinformers.PodInformer, jobInformer batchinfor
 	})
 	jm.jobLister = jobInformer.Lister()
 	jm.jobStoreSynced = jobInformer.Informer().HasSynced
-	// watch pod add/update/delete等变更 调用对应函数
+	// 监听watch pod add/update/delete等事件 并且调用对应事件注册的函数
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    jm.addPod,
 		UpdateFunc: jm.updatePod,
@@ -153,8 +153,9 @@ func NewController(podInformer coreinformers.PodInformer, jobInformer batchinfor
 	})
 	jm.podStore = podInformer.Lister()
 	jm.podStoreSynced = podInformer.Informer().HasSynced
-
+	// 更新job status的函数
 	jm.updateHandler = jm.updateJobStatus
+	// 核心实现 处理job的函数
 	jm.syncHandler = jm.syncJob
 
 	return jm
@@ -514,7 +515,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// 使用job的selector获取可以匹配的pod 如果存在孤儿的就进行关联 如果已经关联的 如果pod label有变化 那就取消关联
 	// 疑问 1.匹配规则及方式是怎样的 2.如果确定此pod是孤儿pod 关联的条件是什么 3 如何删掉已经变化的
 	// 1. 使用job的selector和pod的label进行匹配
-	// 2.
+	// 2. 如果是孤儿的pod 那么会进行关联 对pod设置OwnerReferences
 	pods, err := jm.getPodsForJob(&job)
 	if err != nil {
 		return false, err
@@ -587,12 +588,12 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		// 记录相应的事件
 		jm.recorder.Event(&job, v1.EventTypeWarning, failureReason, failureMessage)
 	} else {
-		// 如果非failed状态 判断是否可以进行同步
+		// 如果非failed状态 判断是否可以进行同步 及 job没有被删除 那么进行同步
 		if jobNeedsSync && job.DeletionTimestamp == nil {
 			// manageJob的主要功能就是来根据job配置的 对pod进行对比 达到期望的状态
 			active, manageJobErr = jm.manageJob(activePods, succeeded, &job)
 		}
-		// 设置完成数
+		// 设置完成数 = 成功数
 		completions := succeeded
 		complete := false
 		// 如果没有设置Completions 那么只要有大于一个pod运行完成 并且活跃pod=0 就设置该job为complete状态
@@ -614,10 +615,11 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 			// 如果设置了Completions 那>=Completions就代表该Job已经完成
 			if completions >= *job.Spec.Completions {
 				complete = true
-				//如果
+				//如果active pod 大于0 那么发送事件
 				if active > 0 {
 					jm.recorder.Event(&job, v1.EventTypeWarning, "TooManyActivePods", "Too many active pods running after completion count reached")
 				}
+				// 如果实际完成数大于job所设置的完成数 那么发送事件
 				if completions > *job.Spec.Completions {
 					jm.recorder.Event(&job, v1.EventTypeWarning, "TooManySucceededPods", "Too many succeeded pods running after completion count reached")
 				}
@@ -713,7 +715,7 @@ func pastBackoffLimitOnFailure(job *batch.Job, pods []*v1.Pod) bool {
 	if *job.Spec.BackoffLimit == 0 {
 		return result > 0
 	}
-	//
+	// 比较重启次数是否大于等于job的BackoffLimit
 	return result >= *job.Spec.BackoffLimit
 }
 
@@ -856,7 +858,7 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 		// prevented from spamming the API service with the pod create requests
 		// after one of its pods fails.  Conveniently, this also prevents the
 		// event spam that those failures would generate.
-		// 从1开始创建，每次2的倍数的进行创建 例如 1>2>4>8
+		// 从1开始创建，每次2的倍数的进行创建 例如 1、2、4、8......，呈指数级增长
 		for batchSize := int32(integer.IntMin(int(diff), controller.SlowStartInitialBatchSize)); diff > 0; batchSize = integer.Int32Min(2*batchSize, diff) {
 			errorCount := len(errCh)
 			wait.Add(int(batchSize))
