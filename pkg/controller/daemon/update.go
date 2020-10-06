@@ -42,6 +42,7 @@ import (
 // rollingUpdate deletes old daemon set pods making sure that no more than
 // ds.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable pods are unavailable
 func (dsc *DaemonSetsController) rollingUpdate(ds *apps.DaemonSet, nodeList []*v1.Node, hash string) error {
+	// 获取目前已经存在的pod和node的关联关系
 	nodeToDaemonPods, err := dsc.getNodesToDaemonPods(ds)
 	if err != nil {
 		return fmt.Errorf("couldn't get node to daemon pod mapping for daemon set %q: %v", ds.Name, err)
@@ -366,15 +367,20 @@ func (dsc *DaemonSetsController) snapshot(ds *apps.DaemonSet, revision int64) (*
 func (dsc *DaemonSetsController) getAllDaemonSetPods(ds *apps.DaemonSet, nodeToDaemonPods map[string][]*v1.Pod, hash string) ([]*v1.Pod, []*v1.Pod) {
 	var newPods []*v1.Pod
 	var oldPods []*v1.Pod
-
+	// 遍历所有key为node value=pod列表
 	for _, pods := range nodeToDaemonPods {
+		// 遍历pod列表
 		for _, pod := range pods {
 			// If the returned error is not nil we have a parse error.
 			// The controller handles this via the hash.
+			// 获取ds.metadata.annotations[deprecated.daemonset.template.generation]的值
 			generation, err := util.GetTemplateGeneration(ds)
 			if err != nil {
 				generation = nil
 			}
+			// 判断pod.metadata.label[pod-template-generation] == ds.metadata.annotations[deprecated.daemonset.template.generation]
+			// 判断pod.metadta.label[controller-revision-hash] == hash
+			// 如果都相等 代表是新pod 如果不想等 表示旧pod
 			if util.IsPodUpdated(pod, hash, generation) {
 				newPods = append(newPods, pod)
 			} else {
