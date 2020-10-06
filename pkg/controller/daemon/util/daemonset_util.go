@@ -107,7 +107,7 @@ func AddOrUpdateDaemonPodTolerations(spec *v1.PodSpec) {
 // hash of provided template and sets default daemon tolerations.
 func CreatePodTemplate(template v1.PodTemplateSpec, generation *int64, hash string) v1.PodTemplateSpec {
 	newTemplate := *template.DeepCopy()
-
+	// 添加或者更新pod的容忍度定义
 	AddOrUpdateDaemonPodTolerations(&newTemplate.Spec)
 
 	if newTemplate.ObjectMeta.Labels == nil {
@@ -150,6 +150,11 @@ func SplitByAvailablePods(minReadySeconds int32, pods []*v1.Pod) ([]*v1.Pod, []*
 // NodeAffinity of the given affinity with a new NodeAffinity that selects the given nodeName.
 // Note that this function assumes that no NodeAffinity conflicts with the selected nodeName.
 func ReplaceDaemonSetPodNodeNameNodeAffinity(affinity *v1.Affinity, nodename string) *v1.Affinity {
+	// matchFields:
+	// - key: metadata.name
+	//   operator: In
+	//   values:
+	//   - k8s-node-1
 	nodeSelReq := v1.NodeSelectorRequirement{
 		Key:      api.ObjectNameField,
 		Operator: v1.NodeSelectorOpIn,
