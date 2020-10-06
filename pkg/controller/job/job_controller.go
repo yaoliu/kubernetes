@@ -758,7 +758,7 @@ func (jm *Controller) manageJob(activePods []*v1.Pod, succeeded int32, job *batc
 	active := int32(len(activePods))
 	// 获取Job并行数量
 	parallelism := *job.Spec.Parallelism
-	// 根据job获取jobkey jobkey的格式为 {namespace}/{job} 例如default/pi
+	// 根据job对象获取jobkey jobkey的格式为 {namespace}/{job} 例如default/pi
 	jobKey, err := controller.KeyFunc(job)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Couldn't get key for job %#v: %v", job, err))
