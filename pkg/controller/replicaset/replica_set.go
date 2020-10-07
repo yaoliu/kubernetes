@@ -619,7 +619,11 @@ func (rsc *ReplicaSetController) manageReplicas(filteredPods []*v1.Pod, rs *apps
 		utilruntime.HandleError(err)
 
 		// Choose which Pods to delete, preferring those in earlier phases of startup.
-		// 传入当前rs的pod 和 其他rs关联的pod 根据优先级进行排序 并且获取需要删除的pod
+		// 传入当前rs的pod 和 其他rs关联的pod 根据优先级进行排序 并且获取需要删除的pod TODO://为什么要传入ranks node列表 对排序用什么影响
+		// 1. Unassigned < assigned
+		// 2. PodPending < PodUnknown < PodRunning
+		// 3. Not ready < ready
+		// 5. Been ready for empty time < less time < more time
 		podsToDelete := getPodsToDelete(filteredPods, relatedPods, diff)
 
 		// Snapshot the UIDs (ns/name) of the pods we're expecting to see
@@ -839,7 +843,7 @@ func (rsc *ReplicaSetController) getIndirectlyRelatedPods(rs *apps.ReplicaSet) (
 func getPodsToDelete(filteredPods, relatedPods []*v1.Pod, diff int) []*v1.Pod {
 	// No need to sort pods if we are about to delete all of them.
 	// diff will always be <= len(filteredPods), so not need to handle > case.
-	// 如果要删除的pod 小于目前存在的pod 那么直接删除从存在的pod里取出diff 如果大于 那么进行排序后删除
+	// 如果要删除的pod 小于目前rs的pod 那么直接删除从存在的pod里取出diff 如果大于 那么把当前rs和其他rs关联的pod进行排序后删除
 	if diff < len(filteredPods) {
 		podsWithRanks := getPodsRankedByRelatedPodsOnSameNode(filteredPods, relatedPods)
 		sort.Sort(podsWithRanks)
@@ -853,15 +857,21 @@ func getPodsToDelete(filteredPods, relatedPods []*v1.Pod, diff int) []*v1.Pod {
 // relatedPods generally should be a superset of podsToRank.
 func getPodsRankedByRelatedPodsOnSameNode(podsToRank, relatedPods []*v1.Pod) controller.ActivePodsWithRanks {
 	podsOnNode := make(map[string]int)
+	// 遍历其他rs的pod
 	for _, pod := range relatedPods {
+		// 判断状态是active
 		if controller.IsPodActive(pod) {
+			// 把当前pod所属的node 添加到podsOnNode value为pod数量
 			podsOnNode[pod.Spec.NodeName]++
 		}
 	}
+
 	ranks := make([]int, len(podsToRank))
+	// 遍历所以当前rs的pod 把pod对应的node出现的次数 添加到ranks里 格式为[1,2]
 	for i, pod := range podsToRank {
 		ranks[i] = podsOnNode[pod.Spec.NodeName]
 	}
+	// 传入当前rs的pod 及 node次数列表
 	return controller.ActivePodsWithRanks{Pods: podsToRank, Rank: ranks}
 }
 
