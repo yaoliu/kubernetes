@@ -614,12 +614,12 @@ func (rsc *ReplicaSetController) manageReplicas(filteredPods []*v1.Pod, rs *apps
 			diff = rsc.burstReplicas
 		}
 		klog.V(2).InfoS("Too many replicas", "replicaSet", klog.KObj(rs), "need", *(rs.Spec.Replicas), "deleting", diff)
-		//
+		// 获取当前其他有关联的rs里所有的pod
 		relatedPods, err := rsc.getIndirectlyRelatedPods(rs)
 		utilruntime.HandleError(err)
 
 		// Choose which Pods to delete, preferring those in earlier phases of startup.
-		// 根据优先级进行排序 并且获取需要删除的pod
+		// 传入当前rs的pod 和 其他rs关联的pod 根据优先级进行排序 并且获取需要删除的pod
 		podsToDelete := getPodsToDelete(filteredPods, relatedPods, diff)
 
 		// Snapshot the UIDs (ns/name) of the pods we're expecting to see
@@ -801,6 +801,7 @@ func slowStartBatch(count int, initialBatchSize int, fn func() error) (int, erro
 // that is owned by the given ReplicaSet's owner.
 func (rsc *ReplicaSetController) getIndirectlyRelatedPods(rs *apps.ReplicaSet) ([]*v1.Pod, error) {
 	var relatedPods []*v1.Pod
+	// seen map[pod.UID] = []rs
 	seen := make(map[types.UID]*apps.ReplicaSet)
 	// 遍历和rs的相关的rs
 	for _, relatedRS := range rsc.getReplicaSetsWithSameController(rs) {
@@ -808,18 +809,20 @@ func (rsc *ReplicaSetController) getIndirectlyRelatedPods(rs *apps.ReplicaSet) (
 		if err != nil {
 			return nil, err
 		}
-		// 获取每个rs所关联的pod
+		// 获取每个rs所关联的pod列表
 		pods, err := rsc.podLister.Pods(relatedRS.Namespace).List(selector)
 		if err != nil {
 			return nil, err
 		}
-		//
+		// 遍历pod列表 并判断
 		for _, pod := range pods {
+			// 判断pod.UID是否在seen里 如果不存在 添加进去 感觉seen的作用就是为了去重pod
 			if otherRS, found := seen[pod.UID]; found {
 				klog.V(5).Infof("Pod %s/%s is owned by both %v %s/%s and %v %s/%s", pod.Namespace, pod.Name, rsc.Kind, otherRS.Namespace, otherRS.Name, rsc.Kind, relatedRS.Namespace, relatedRS.Name)
 				continue
 			}
 			seen[pod.UID] = relatedRS
+			// 并把这个pod添加到relatedPods里
 			relatedPods = append(relatedPods, pod)
 		}
 	}
