@@ -161,7 +161,7 @@ type ControllerExpectations struct {
 
 // GetExpectations returns the ControlleeExpectations of the given controller.
 func (r *ControllerExpectations) GetExpectations(controllerKey string) (*ControlleeExpectations, bool, error) {
-	//从cache里获取
+	//从根据key从cache里获取 如果存在 则需要转换为ControlleeExpectations
 	exp, exists, err := r.GetByKey(controllerKey)
 	if err == nil && exists {
 		return exp.(*ControlleeExpectations), true, nil
@@ -171,6 +171,7 @@ func (r *ControllerExpectations) GetExpectations(controllerKey string) (*Control
 
 // DeleteExpectations deletes the expectations of the given controller from the TTLStore.
 func (r *ControllerExpectations) DeleteExpectations(controllerKey string) {
+	// 从cache里删除对应key的数据
 	if exp, exists, err := r.GetByKey(controllerKey); err == nil && exists {
 		if err := r.Delete(exp); err != nil {
 			klog.V(2).Infof("Error deleting expectations for controller %v: %v", controllerKey, err)
@@ -182,17 +183,18 @@ func (r *ControllerExpectations) DeleteExpectations(controllerKey string) {
 // Add/del counts are established by the controller at sync time, and updated as controllees are observed by the controller
 // manager.
 func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) bool {
-	//根据key获取
+	//根据key从cache获取对象 如果存在 需要判断是否需要同步
 	if exp, exists, err := r.GetExpectations(controllerKey); exists {
-		// 判断adds和dels是否大于0
+		// 1. 同步条件 判断adds和dels的值是否小于等于0
 		if exp.Fulfilled() {
 			klog.V(4).Infof("Controller expectations fulfilled %#v", exp)
 			return true
 		} else if exp.isExpired() {
-			// 判断是否超过5min没有更新
+			// 2. 同步条件  判断是否超过5min没有更新
 			klog.V(4).Infof("Controller expectations expired %#v", exp)
 			return true
 		} else {
+			// 如果不需要同步 则返回false
 			klog.V(4).Infof("Controller still waiting on expectations %#v", exp)
 			return false
 		}
@@ -215,6 +217,7 @@ func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) boo
 // TODO: Make this possible to disable in tests.
 // TODO: Support injection of clock.
 func (exp *ControlleeExpectations) isExpired() bool {
+	// 判断是否超过了ExpectationsTimeout时间
 	return clock.RealClock{}.Since(exp.timestamp) > ExpectationsTimeout
 }
 
