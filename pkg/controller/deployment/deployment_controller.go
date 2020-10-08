@@ -639,11 +639,12 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	// Update deployment conditions with an Unknown condition when pausing/resuming
 	// a deployment. In this way, we can be sure that we won't timeout when a user
 	// resumes a Deployment with a set progressDeadlineSeconds.
-	// 检查pause状态
+	// 当执行 kubectl rollout pause deployment/nginx
+	// 检查pause状态及设置对应条件
 	if err = dc.checkPausedConditions(d); err != nil {
 		return err
 	}
-	// 如果处于pause状态
+	// 如果处于pause状态 那么执行sync操作
 	if d.Spec.Paused {
 		return dc.sync(d, rsList)
 	}

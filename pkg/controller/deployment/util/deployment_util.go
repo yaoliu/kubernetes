@@ -668,7 +668,7 @@ func FindOldReplicaSets(deployment *apps.Deployment, rsList []*apps.ReplicaSet) 
 	// 遍历所有rs
 	for _, rs := range rsList {
 		// Filter out new replica set
-		// 过滤掉new rs
+		// 过滤掉 new rs
 		if newRS != nil && rs.UID == newRS.UID {
 			continue
 		}
@@ -694,6 +694,7 @@ func SetFromReplicaSetTemplate(deployment *apps.Deployment, template v1.PodTempl
 
 // GetReplicaCountForReplicaSets returns the sum of Replicas of the given replica sets.
 func GetReplicaCountForReplicaSets(replicaSets []*apps.ReplicaSet) int32 {
+	// 所有rs.spec.replicas的累加值
 	totalReplicas := int32(0)
 	for _, rs := range replicaSets {
 		if rs != nil {
@@ -705,6 +706,7 @@ func GetReplicaCountForReplicaSets(replicaSets []*apps.ReplicaSet) int32 {
 
 // GetActualReplicaCountForReplicaSets returns the sum of actual replicas of the given replica sets.
 func GetActualReplicaCountForReplicaSets(replicaSets []*apps.ReplicaSet) int32 {
+	// 所有rs.status.replicas的累加值
 	totalActualReplicas := int32(0)
 	for _, rs := range replicaSets {
 		if rs != nil {
@@ -716,6 +718,7 @@ func GetActualReplicaCountForReplicaSets(replicaSets []*apps.ReplicaSet) int32 {
 
 // GetReadyReplicaCountForReplicaSets returns the number of ready pods corresponding to the given replica sets.
 func GetReadyReplicaCountForReplicaSets(replicaSets []*apps.ReplicaSet) int32 {
+	// 所有rs.status.readyReplicas的累加值
 	totalReadyReplicas := int32(0)
 	for _, rs := range replicaSets {
 		if rs != nil {
@@ -727,6 +730,7 @@ func GetReadyReplicaCountForReplicaSets(replicaSets []*apps.ReplicaSet) int32 {
 
 // GetAvailableReplicaCountForReplicaSets returns the number of available pods corresponding to the given replica sets.
 func GetAvailableReplicaCountForReplicaSets(replicaSets []*apps.ReplicaSet) int32 {
+	// 所有rs.status.availableReplicas的累加值
 	totalAvailableReplicas := int32(0)
 	for _, rs := range replicaSets {
 		if rs != nil {

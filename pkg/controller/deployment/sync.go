@@ -35,12 +35,14 @@ import (
 
 // syncStatusOnly only updates Deployments Status and doesn't take any mutating actions.
 func (dc *DeploymentController) syncStatusOnly(d *apps.Deployment, rsList []*apps.ReplicaSet) error {
+	// 获取new rs 和old rs
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, false)
 	if err != nil {
 		return err
 	}
 
 	allRSs := append(oldRSs, newRS)
+	// 同步deployments状态
 	return dc.syncDeploymentStatus(allRSs, newRS, d)
 }
 
@@ -59,6 +61,7 @@ func (dc *DeploymentController) sync(d *apps.Deployment, rsList []*apps.ReplicaS
 	}
 
 	// Clean up the deployment when it's paused and no rollback is in flight.
+	// 如果处于暂停状态 并且没有执行回滚操作 那就 清理 old rs
 	if d.Spec.Paused && getRollbackTo(d) == nil {
 		if err := dc.cleanupDeployment(oldRSs, d); err != nil {
 			return err
@@ -89,10 +92,12 @@ func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error 
 	needsUpdate := false
 	// 判断是不是处于暂停状态
 	if d.Spec.Paused && !pausedCondExists {
+		// 当我执行kubectl rollout pause deployment/nginx 会先d.spec.paused = true 但是condition对应的一条需要在这里创建
 		condition := deploymentutil.NewDeploymentCondition(apps.DeploymentProgressing, v1.ConditionUnknown, deploymentutil.PausedDeployReason, "Deployment is paused")
 		deploymentutil.SetDeploymentCondition(&d.Status, *condition)
 		needsUpdate = true
 	} else if !d.Spec.Paused && pausedCondExists {
+		// 当d.spec.paused = false 代表已经恢复了 已经执行了 kubectl rollout resume deployment/nginx
 		condition := deploymentutil.NewDeploymentCondition(apps.DeploymentProgressing, v1.ConditionUnknown, deploymentutil.ResumedDeployReason, "Deployment is resumed")
 		deploymentutil.SetDeploymentCondition(&d.Status, *condition)
 		needsUpdate = true
@@ -142,17 +147,21 @@ const (
 // 3. If there's no existing new RS and createIfNotExisted is true, create one with appropriate revision number (maxOldRevision + 1) and replicas.
 // Note that the pod-template-hash will be added to adopted RSes and pods.
 func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, oldRSs []*apps.ReplicaSet, createIfNotExisted bool) (*apps.ReplicaSet, error) {
+	// 获取new rs 根据ds.spec.template == rs.spec.template
 	existingNewRS := deploymentutil.FindNewReplicaSet(d, rsList)
 
 	// Calculate the max revision number among all old RSes
+	// 比较所有和ds有关的 old rs 根据rs.metadata.annotations[deployment.kubernetes.io/revision]  获取最大的rs版本
 	maxOldRevision := deploymentutil.MaxRevision(oldRSs)
 	// Calculate revision number for this new replica set
+	// 生成一个最新版本
 	newRevision := strconv.FormatInt(maxOldRevision+1, 10)
 
 	// Latest replica set exists. We need to sync its annotations (includes copying all but
 	// annotationsToSkip from the parent deployment, and update revision, desiredReplicas,
 	// and maxReplicas) and also update the revision annotation in the deployment with the
 	// latest revision.
+	// 如果不为空
 	if existingNewRS != nil {
 		rsCopy := existingNewRS.DeepCopy()
 
@@ -476,12 +485,13 @@ func (dc *DeploymentController) cleanupDeployment(oldRSs []*apps.ReplicaSet, dep
 
 // syncDeploymentStatus checks if the status is up-to-date and sync it if necessary
 func (dc *DeploymentController) syncDeploymentStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, d *apps.Deployment) error {
+	// 使用 ds的 all rs 和 new rs 计算最新的deployments.status
 	newStatus := calculateStatus(allRSs, newRS, d)
-
+	// 判断deployments.status和newStatus是否一样 如果一样就不需要同步了
 	if reflect.DeepEqual(d.Status, newStatus) {
 		return nil
 	}
-
+	// 设置deployments.status
 	newDeployment := d
 	newDeployment.Status = newStatus
 	_, err := dc.client.AppsV1().Deployments(newDeployment.Namespace).UpdateStatus(context.TODO(), newDeployment, metav1.UpdateOptions{})
@@ -490,7 +500,9 @@ func (dc *DeploymentController) syncDeploymentStatus(allRSs []*apps.ReplicaSet, 
 
 // calculateStatus calculates the latest status for the provided deployment by looking into the provided replica sets.
 func calculateStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, deployment *apps.Deployment) apps.DeploymentStatus {
+	// 获取所有rs.status.availableReplicas的累加值
 	availableReplicas := deploymentutil.GetAvailableReplicaCountForReplicaSets(allRSs)
+	// 获取所有rs.spec.replicas的累加值
 	totalReplicas := deploymentutil.GetReplicaCountForReplicaSets(allRSs)
 	unavailableReplicas := totalReplicas - availableReplicas
 	// If unavailableReplicas is negative, then that means the Deployment has more available replicas running than
@@ -498,7 +510,7 @@ func calculateStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, deployme
 	if unavailableReplicas < 0 {
 		unavailableReplicas = 0
 	}
-
+	// 创建ds的status
 	status := apps.DeploymentStatus{
 		// TODO: Ensure that if we start retrying status updates, we won't pick up a new Generation value.
 		ObservedGeneration:  deployment.Generation,
@@ -511,6 +523,7 @@ func calculateStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, deployme
 	}
 
 	// Copy conditions one by one so we won't mutate the original object.
+	// 把 ds对象的conditions都复制到status.conditions里
 	conditions := deployment.Status.Conditions
 	for i := range conditions {
 		status.Conditions = append(status.Conditions, conditions[i])
