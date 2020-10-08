@@ -320,18 +320,21 @@ func NewReplicaSetControllerRefManager(
 func (m *ReplicaSetControllerRefManager) ClaimReplicaSets(sets []*apps.ReplicaSet) ([]*apps.ReplicaSet, error) {
 	var claimed []*apps.ReplicaSet
 	var errlist []error
-
+	// controller的selector和obj.label进行匹配
 	match := func(obj metav1.Object) bool {
 		return m.Selector.Matches(labels.Set(obj.GetLabels()))
 	}
+	// 使obj和controller进行关联 主要更新obj.metadata.ownerReferences 把controller的信息放入ownerReferences
 	adopt := func(obj metav1.Object) error {
 		return m.AdoptReplicaSet(obj.(*apps.ReplicaSet))
 	}
+	// 接触controller和obj的关系 obj.metadata.
 	release := func(obj metav1.Object) error {
 		return m.ReleaseReplicaSet(obj.(*apps.ReplicaSet))
 	}
 
 	for _, rs := range sets {
+		// 遍历所有的rs 找到和m.selector有关联的rs 添加到claimed
 		ok, err := m.ClaimObject(rs, match, adopt, release)
 		if err != nil {
 			errlist = append(errlist, err)

@@ -47,6 +47,7 @@ func (dc *DeploymentController) syncStatusOnly(d *apps.Deployment, rsList []*app
 // sync is responsible for reconciling deployments on scaling events or when they
 // are paused.
 func (dc *DeploymentController) sync(d *apps.Deployment, rsList []*apps.ReplicaSet) error {
+	// 获取new rs 和old rs
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, false)
 	if err != nil {
 		return err
@@ -75,14 +76,18 @@ func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error 
 	if !deploymentutil.HasProgressDeadline(d) {
 		return nil
 	}
+	// 获取d.status.conditions.type = Progressing的conditions
 	cond := deploymentutil.GetDeploymentCondition(d.Status, apps.DeploymentProgressing)
+	// 判断条件reson 是不是timeout 如果是就返回nil
 	if cond != nil && cond.Reason == deploymentutil.TimedOutReason {
 		// If we have reported lack of progress, do not overwrite it with a paused condition.
 		return nil
 	}
+	// 判断当前是不是处于DeploymentPaused 暂停状态
 	pausedCondExists := cond != nil && cond.Reason == deploymentutil.PausedDeployReason
 
 	needsUpdate := false
+	// 判断是不是处于暂停状态
 	if d.Spec.Paused && !pausedCondExists {
 		condition := deploymentutil.NewDeploymentCondition(apps.DeploymentProgressing, v1.ConditionUnknown, deploymentutil.PausedDeployReason, "Deployment is paused")
 		deploymentutil.SetDeploymentCondition(&d.Status, *condition)
@@ -114,6 +119,7 @@ func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error 
 // Note that currently the deployment controller is using caches to avoid querying the server for reads.
 // This may lead to stale reads of replica sets, thus incorrect deployment status.
 func (dc *DeploymentController) getAllReplicaSetsAndSyncRevision(d *apps.Deployment, rsList []*apps.ReplicaSet, createIfNotExisted bool) (*apps.ReplicaSet, []*apps.ReplicaSet, error) {
+	// 获取所有 old rs
 	_, allOldRSs := deploymentutil.FindOldReplicaSets(d, rsList)
 
 	// Get new replica set with the updated revision number
@@ -526,6 +532,7 @@ func calculateStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, deployme
 //
 // rsList should come from getReplicaSetsForDeployment(d).
 func (dc *DeploymentController) isScalingEvent(d *apps.Deployment, rsList []*apps.ReplicaSet) (bool, error) {
+	// 获取新旧rs
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, false)
 	if err != nil {
 		return false, err

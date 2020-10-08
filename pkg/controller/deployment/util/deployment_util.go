@@ -643,6 +643,7 @@ func EqualIgnoreHash(template1, template2 *v1.PodTemplateSpec) bool {
 
 // FindNewReplicaSet returns the new RS this given deployment targets (the one with the same pod template).
 func FindNewReplicaSet(deployment *apps.Deployment, rsList []*apps.ReplicaSet) *apps.ReplicaSet {
+	// 根据rs的创建时间进行排序
 	sort.Sort(controller.ReplicaSetsByCreationTimestamp(rsList))
 	for i := range rsList {
 		if EqualIgnoreHash(&rsList[i].Spec.Template, &deployment.Spec.Template) {
@@ -662,13 +663,18 @@ func FindNewReplicaSet(deployment *apps.Deployment, rsList []*apps.ReplicaSet) *
 func FindOldReplicaSets(deployment *apps.Deployment, rsList []*apps.ReplicaSet) ([]*apps.ReplicaSet, []*apps.ReplicaSet) {
 	var requiredRSs []*apps.ReplicaSet
 	var allRSs []*apps.ReplicaSet
+	// 根据rs 创建时间排序 判断ds.spec.template 和 rs.spec.template是否一样 一样rs为new rs
 	newRS := FindNewReplicaSet(deployment, rsList)
+	// 遍历所有rs
 	for _, rs := range rsList {
 		// Filter out new replica set
+		// 过滤掉new rs
 		if newRS != nil && rs.UID == newRS.UID {
 			continue
 		}
+		// 如果非new rs 加入到allRSs里
 		allRSs = append(allRSs, rs)
+		// 如果rs.spec.副本数不等于0 加入到requiredRSs里
 		if *(rs.Spec.Replicas) != 0 {
 			requiredRSs = append(requiredRSs, rs)
 		}

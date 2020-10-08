@@ -121,7 +121,8 @@ func (dc *DeploymentController) updateDeploymentAndClearRollbackTo(d *apps.Deplo
 
 // TODO: Remove this when extensions/v1beta1 and apps/v1beta1 Deployment are dropped.
 func getRollbackTo(d *apps.Deployment) *extensions.RollbackConfig {
-	// Extract the annotation used for round-tripping the deprecated RollbackTo field.
+	// Extract the annotation used for round-tripping the deprecated RollbackTo field
+	// 检查是否有d.metadata.annotations[deprecated.deployment.rollback.to]字段
 	revision := d.Annotations[apps.DeprecatedRollbackTo]
 	if revision == "" {
 		return nil
