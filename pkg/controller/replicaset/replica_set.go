@@ -364,7 +364,7 @@ func (rsc *ReplicaSetController) deleteRS(obj interface{}) {
 // When a pod is created, enqueue the replica set that manages it and update its expectations.
 func (rsc *ReplicaSetController) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	// 判断pod是不是处于郑州被删除中
+	// 判断pod是不是处于正在被删除中
 	if pod.DeletionTimestamp != nil {
 		// on a restart of the controller manager, it's possible a new pod shows up in a state that
 		// is already pending deletion. Prevent the pod from being a creation observation.
