@@ -161,7 +161,7 @@ func (dc *DeploymentController) Run(workers int, stopCh <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync("deployment", stopCh, dc.dListerSynced, dc.rsListerSynced, dc.podListerSynced) {
 		return
 	}
-
+	// 根据worker数量 开启多个go 来进行工作
 	for i := 0; i < workers; i++ {
 		go wait.Until(dc.worker, time.Second, stopCh)
 	}
@@ -506,6 +506,7 @@ func (dc *DeploymentController) handleErr(err error, key interface{}) {
 // ControllerRef by adopting and orphaning.
 // It returns the list of ReplicaSets that this Deployment should manage.
 func (dc *DeploymentController) getReplicaSetsForDeployment(d *apps.Deployment) ([]*apps.ReplicaSet, error) {
+	// 根据deployment对象获取有关联的rs对象
 	// List all ReplicaSets to find those we own but that no longer match our
 	// selector. They will be orphaned by ClaimReplicaSets().
 	// 获取所有rs对象
@@ -542,6 +543,7 @@ func (dc *DeploymentController) getReplicaSetsForDeployment(d *apps.Deployment) 
 // shouldn't be modified in any way.
 func (dc *DeploymentController) getPodMapForDeployment(d *apps.Deployment, rsList []*apps.ReplicaSet) (map[types.UID][]*v1.Pod, error) {
 	// Get all Pods that potentially belong to this Deployment.
+	// 获取属于的deployment的pod列表
 	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
 	if err != nil {
 		return nil, err
@@ -557,7 +559,7 @@ func (dc *DeploymentController) getPodMapForDeployment(d *apps.Deployment, rsLis
 	for _, rs := range rsList {
 		podMap[rs.UID] = []*v1.Pod{}
 	}
-	//遍历pod
+	// 遍历pod
 	for _, pod := range pods {
 		// Do not ignore inactive Pods because Recreate Deployments need to verify that no
 		// Pods from older versions are running before spinning up new Pods.
@@ -631,8 +633,9 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	if err != nil {
 		return err
 	}
-	// 如果处于被删除状态 同步状态
+	// 判断是否处于被删除状态
 	if d.DeletionTimestamp != nil {
+		// 如果处于删除状态 同步deployment状态
 		return dc.syncStatusOnly(d, rsList)
 	}
 
@@ -640,7 +643,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	// a deployment. In this way, we can be sure that we won't timeout when a user
 	// resumes a Deployment with a set progressDeadlineSeconds.
 	// 当执行 kubectl rollout pause deployment/nginx
-	// 检查pause状态及设置对应条件
+	// 检查pause状态及设置对应deployment.status.Conditions
 	if err = dc.checkPausedConditions(d); err != nil {
 		return err
 	}
@@ -652,16 +655,20 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	// rollback is not re-entrant in case the underlying replica sets are updated with a new
 	// revision so we should ensure that we won't proceed to update replica sets until we
 	// make sure that the deployment has cleaned up its rollback spec in subsequent enqueues.
-	// 检查是否为回滚操作 d.metadata.annotations[deprecated.deployment.rollback.to]字段
+	// 检查是否为回滚操作 如果有deployment.metadata.annotations[deprecated.deployment.rollback.to]字段 就进行回滚
 	if getRollbackTo(d) != nil {
+		// 回滚
 		return dc.rollback(d, rsList)
 	}
-	// 判断是否处于scaling 扩缩容状态
+	// 判断是否处于scaling 扩容/缩容状态
+	// 1. 遍历所有和deployments有关的rs,取出rs.spec.replicas > 0的rs
+	// 2. 判断每个rs.metadata.annoations["deployment.kubernetes.io/desired-replicas"]的值是否与deployment.spec.replicas是否相等 如果不相等需要扩容/缩容
 	scalingEvent, err := dc.isScalingEvent(d, rsList)
 	if err != nil {
 		return err
 	}
 	if scalingEvent {
+		// 同步扩缩容
 		return dc.sync(d, rsList)
 	}
 	// 根据不同策略来进行不同方式的更新
@@ -669,6 +676,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	case apps.RecreateDeploymentStrategyType:
 		return dc.rolloutRecreate(d, rsList, podMap)
 	case apps.RollingUpdateDeploymentStrategyType:
+		// 滚动更新
 		return dc.rolloutRolling(d, rsList)
 	}
 	return fmt.Errorf("unexpected deployment strategy type: %s", d.Spec.Strategy.Type)

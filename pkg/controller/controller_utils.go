@@ -1138,6 +1138,7 @@ func PatchNodeTaints(c clientset.Interface, nodeName string, oldNode *v1.Node, n
 // a collisionCount to avoid hash collision. The hash will be safe encoded to
 // avoid bad words.
 func ComputeHash(template *v1.PodTemplateSpec, collisionCount *int32) string {
+	// 计算hash
 	podTemplateSpecHasher := fnv.New32a()
 	hashutil.DeepHashObject(podTemplateSpecHasher, *template)
 

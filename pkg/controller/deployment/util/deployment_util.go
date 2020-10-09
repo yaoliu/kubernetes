@@ -231,11 +231,13 @@ func Revision(obj runtime.Object) (int64, error) {
 // copying required deployment annotations to it; it returns true if replica set's annotation is changed.
 func SetNewReplicaSetAnnotations(deployment *apps.Deployment, newRS *apps.ReplicaSet, newRevision string, exists bool, revHistoryLimitInChars int) bool {
 	// First, copy deployment's annotations (except for apply and revision annotations)
+	// 把deployment.metadata.annotations 复制给rs.metadata.annotations
 	annotationChanged := copyDeploymentAnnotationsToReplicaSet(deployment, newRS)
 	// Then, update replica set's revision annotation
 	if newRS.Annotations == nil {
 		newRS.Annotations = make(map[string]string)
 	}
+	// 获取revision
 	oldRevision, ok := newRS.Annotations[RevisionAnnotation]
 	// The newRS's revision should be the greatest among all RSes. Usually, its revision number is newRevision (the max revision number
 	// of all old RSes + 1). However, it's possible that some of the old RSes are deleted after the newRS revision being updated, and
@@ -248,6 +250,7 @@ func SetNewReplicaSetAnnotations(deployment *apps.Deployment, newRS *apps.Replic
 			return false
 		}
 		//If the RS annotation is empty then initialise it to 0
+		// 如果是空的 就是设置0
 		oldRevisionInt = 0
 	}
 	newRevisionInt, err := strconv.ParseInt(newRevision, 10, 64)
@@ -256,6 +259,7 @@ func SetNewReplicaSetAnnotations(deployment *apps.Deployment, newRS *apps.Replic
 		return false
 	}
 	if oldRevisionInt < newRevisionInt {
+		// 设置新的revision
 		newRS.Annotations[RevisionAnnotation] = newRevision
 		annotationChanged = true
 		klog.V(4).Infof("Updating replica set %q revision to %s", newRS.Name, newRevision)
@@ -263,10 +267,12 @@ func SetNewReplicaSetAnnotations(deployment *apps.Deployment, newRS *apps.Replic
 	// If a revision annotation already existed and this replica set was updated with a new revision
 	// then that means we are rolling back to this replica set. We need to preserve the old revisions
 	// for historical information.
+	// 判断如果old revision存在 并且小于最新的rs
 	if ok && oldRevisionInt < newRevisionInt {
 		revisionHistoryAnnotation := newRS.Annotations[RevisionHistoryAnnotation]
 		oldRevisions := strings.Split(revisionHistoryAnnotation, ",")
 		if len(oldRevisions[0]) == 0 {
+			// 如果更新此rs.metadata.annotations[deployment.kubernetes.io/revision-history] = old revision
 			newRS.Annotations[RevisionHistoryAnnotation] = oldRevision
 		} else {
 			totalLen := len(revisionHistoryAnnotation) + len(oldRevision) + 1
@@ -356,18 +362,21 @@ func FindActiveOrLatest(newRS *apps.ReplicaSet, oldRSs []*apps.ReplicaSet) *apps
 	if newRS == nil && len(oldRSs) == 0 {
 		return nil
 	}
-
+	// 根据每个rs的createtimestamp倒序排列
 	sort.Sort(sort.Reverse(controller.ReplicaSetsByCreationTimestamp(oldRSs)))
+	// 获取rs.spec.replicas > 0的rs
 	allRSs := controller.FilterActiveReplicaSets(append(oldRSs, newRS))
 
 	switch len(allRSs) {
 	case 0:
 		// If there is no active replica set then we should return the newest.
+		// 如果不存在活跃的 就返回一个最新的
 		if newRS != nil {
 			return newRS
 		}
 		return oldRSs[0]
 	case 1:
+		// 如果有活跃的rs 就返回
 		return allRSs[0]
 	default:
 		return nil
@@ -458,6 +467,7 @@ func MaxSurge(deployment apps.Deployment) int32 {
 		return int32(0)
 	}
 	// Error caught by validation
+	// 获取最大的surge
 	maxSurge, _, _ := ResolveFenceposts(deployment.Spec.Strategy.RollingUpdate.MaxSurge, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable, *(deployment.Spec.Replicas))
 	return maxSurge
 }
@@ -643,7 +653,7 @@ func EqualIgnoreHash(template1, template2 *v1.PodTemplateSpec) bool {
 
 // FindNewReplicaSet returns the new RS this given deployment targets (the one with the same pod template).
 func FindNewReplicaSet(deployment *apps.Deployment, rsList []*apps.ReplicaSet) *apps.ReplicaSet {
-	// 根据rs的创建时间进行排序
+	// 根据rs的创建时间进行排序 获取最新的rs
 	sort.Sort(controller.ReplicaSetsByCreationTimestamp(rsList))
 	for i := range rsList {
 		if EqualIgnoreHash(&rsList[i].Spec.Template, &deployment.Spec.Template) {
@@ -863,6 +873,7 @@ func IsSaturated(deployment *apps.Deployment, rs *apps.ReplicaSet) bool {
 	if err != nil {
 		return false
 	}
+	//
 	return *(rs.Spec.Replicas) == *(deployment.Spec.Replicas) &&
 		int32(desired) == *(deployment.Spec.Replicas) &&
 		rs.Status.AvailableReplicas == *(deployment.Spec.Replicas)

@@ -29,6 +29,7 @@ import (
 
 // rolloutRolling implements the logic for rolling a new replica set.
 func (dc *DeploymentController) rolloutRolling(d *apps.Deployment, rsList []*apps.ReplicaSet) error {
+	// 获取 new rs 和 old rs 如果这是一个新建的depolyments 理论上只要new rs 没有old rs
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, true)
 	if err != nil {
 		return err
