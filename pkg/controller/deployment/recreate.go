@@ -27,12 +27,13 @@ import (
 // rolloutRecreate implements the logic for recreating a replica set.
 func (dc *DeploymentController) rolloutRecreate(d *apps.Deployment, rsList []*apps.ReplicaSet, podMap map[types.UID][]*v1.Pod) error {
 	// Don't create a new RS if not already existed, so that we avoid scaling up before scaling down.
+	// 获取最新的rs 和 所有 old rs
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, false)
 	if err != nil {
 		return err
 	}
 	allRSs := append(oldRSs, newRS)
-	// 获取活跃的rs
+	// 获取所有活跃的 old rs
 	activeOldRSs := controller.FilterActiveReplicaSets(oldRSs)
 
 	// scale down old replica sets.
@@ -42,18 +43,20 @@ func (dc *DeploymentController) rolloutRecreate(d *apps.Deployment, rsList []*ap
 		return err
 	}
 	if scaledDown {
-		// Update DeploymentStatus.
+		// Update DeploymentStatus.x
 		// 更新 deployment状态
 		return dc.syncRolloutStatus(allRSs, newRS, d)
 	}
 
 	// Do not process a deployment when it has old pods running.
+	// 判断是否有旧的pod在运行
 	if oldPodsRunning(newRS, oldRSs, podMap) {
 		return dc.syncRolloutStatus(allRSs, newRS, d)
 	}
 
 	// If we need to create a new RS, create it now.
 	if newRS == nil {
+		// 如果没有最新的rs 就创建一个新的rs
 		newRS, oldRSs, err = dc.getAllReplicaSetsAndSyncRevision(d, rsList, true)
 		if err != nil {
 			return err
@@ -62,17 +65,20 @@ func (dc *DeploymentController) rolloutRecreate(d *apps.Deployment, rsList []*ap
 	}
 
 	// scale up new replica set.
+	// 对replica进行扩容
 	if _, err := dc.scaleUpNewReplicaSetForRecreate(newRS, d); err != nil {
 		return err
 	}
 
 	if util.DeploymentComplete(d, &d.Status) {
+		// 清理所有历史版本
 		if err := dc.cleanupDeployment(oldRSs, d); err != nil {
 			return err
 		}
 	}
 
 	// Sync deployment status.
+	// 更新deployment状态
 	return dc.syncRolloutStatus(allRSs, newRS, d)
 }
 
@@ -101,6 +107,7 @@ func (dc *DeploymentController) scaleDownOldReplicaSetsForRecreate(oldRSs []*app
 
 // oldPodsRunning returns whether there are old pods running or any of the old ReplicaSets thinks that it runs pods.
 func oldPodsRunning(newRS *apps.ReplicaSet, oldRSs []*apps.ReplicaSet, podMap map[types.UID][]*v1.Pod) bool {
+	// 判断所有rs的副本累加值是否大于0 如果是 代表有pod运行
 	if oldPods := util.GetActualReplicaCountForReplicaSets(oldRSs); oldPods > 0 {
 		return true
 	}

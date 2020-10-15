@@ -71,6 +71,7 @@ func (dc *DeploymentController) reconcileNewReplicaSet(allRSs []*apps.ReplicaSet
 		// Scaling not required.
 		return false, nil
 	}
+	// 缩容
 	if *(newRS.Spec.Replicas) > *(deployment.Spec.Replicas) {
 		// Scale down.
 		scaled, _, err := dc.scaleReplicaSetAndRecordEvent(newRS, *(deployment.Spec.Replicas), deployment)

@@ -410,15 +410,18 @@ func getIntFromAnnotation(rs *apps.ReplicaSet, annotationKey string) (int32, boo
 
 // SetReplicasAnnotations sets the desiredReplicas and maxReplicas into the annotations
 func SetReplicasAnnotations(rs *apps.ReplicaSet, desiredReplicas, maxReplicas int32) bool {
+	// 设置replicas.metadata.annotations 期望副本数 最大副本数
 	updated := false
 	if rs.Annotations == nil {
 		rs.Annotations = make(map[string]string)
 	}
+	// 获取replicas.metadata.annotations["deployment.kubernetes.io/desired-replicas"] 如果不!= 就更新
 	desiredString := fmt.Sprintf("%d", desiredReplicas)
 	if hasString := rs.Annotations[DesiredReplicasAnnotation]; hasString != desiredString {
 		rs.Annotations[DesiredReplicasAnnotation] = desiredString
 		updated = true
 	}
+	// 获取replicas.metadata.annotations["deployment.kubernetes.io/max-replicas"] 如果不!= 就更新
 	maxString := fmt.Sprintf("%d", maxReplicas)
 	if hasString := rs.Annotations[MaxReplicasAnnotation]; hasString != maxString {
 		rs.Annotations[MaxReplicasAnnotation] = maxString
@@ -479,6 +482,7 @@ func MaxSurge(deployment apps.Deployment) int32 {
 // of the parent deployment, 2. the replica count that needs be added on the replica sets of the
 // deployment, and 3. the total replicas added in the replica sets of the deployment so far.
 func GetProportion(rs *apps.ReplicaSet, d apps.Deployment, deploymentReplicasToAdd, deploymentReplicasAdded int32) int32 {
+	// 计算出rs扩容/缩容的副本数
 	if rs == nil || *(rs.Spec.Replicas) == 0 || deploymentReplicasToAdd == 0 || deploymentReplicasToAdd == deploymentReplicasAdded {
 		return int32(0)
 	}
