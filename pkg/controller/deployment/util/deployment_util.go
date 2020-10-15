@@ -237,7 +237,7 @@ func SetNewReplicaSetAnnotations(deployment *apps.Deployment, newRS *apps.Replic
 	if newRS.Annotations == nil {
 		newRS.Annotations = make(map[string]string)
 	}
-	// 获取revision
+	// 获取 old revision
 	oldRevision, ok := newRS.Annotations[RevisionAnnotation]
 	// The newRS's revision should be the greatest among all RSes. Usually, its revision number is newRevision (the max revision number
 	// of all old RSes + 1). However, it's possible that some of the old RSes are deleted after the newRS revision being updated, and
@@ -258,9 +258,11 @@ func SetNewReplicaSetAnnotations(deployment *apps.Deployment, newRS *apps.Replic
 		klog.Warningf("Updating replica set revision NewRevision not int %s", err)
 		return false
 	}
+	// 如果 old revision < new revision 那就设置最新的
 	if oldRevisionInt < newRevisionInt {
 		// 设置新的revision
 		newRS.Annotations[RevisionAnnotation] = newRevision
+		// 标志true
 		annotationChanged = true
 		klog.V(4).Infof("Updating replica set %q revision to %s", newRS.Name, newRevision)
 	}
@@ -269,6 +271,7 @@ func SetNewReplicaSetAnnotations(deployment *apps.Deployment, newRS *apps.Replic
 	// for historical information.
 	// 判断如果old revision存在 并且小于最新的rs
 	if ok && oldRevisionInt < newRevisionInt {
+		// 获取当前rs的 deployment.kubernetes.io/revision-history
 		revisionHistoryAnnotation := newRS.Annotations[RevisionHistoryAnnotation]
 		oldRevisions := strings.Split(revisionHistoryAnnotation, ",")
 		if len(oldRevisions[0]) == 0 {
@@ -673,12 +676,12 @@ func FindNewReplicaSet(deployment *apps.Deployment, rsList []*apps.ReplicaSet) *
 func FindOldReplicaSets(deployment *apps.Deployment, rsList []*apps.ReplicaSet) ([]*apps.ReplicaSet, []*apps.ReplicaSet) {
 	var requiredRSs []*apps.ReplicaSet
 	var allRSs []*apps.ReplicaSet
-	// 根据rs 创建时间排序 判断ds.spec.template 和 rs.spec.template是否一样 一样rs为new rs
+	// 根据rs 创建时间排序 判断ds.spec.template 和 rs.spec.template是否一样 一样rs为最新的rs
 	newRS := FindNewReplicaSet(deployment, rsList)
 	// 遍历所有rs
 	for _, rs := range rsList {
 		// Filter out new replica set
-		// 过滤掉 new rs
+		// 过滤掉 最新的 rs
 		if newRS != nil && rs.UID == newRS.UID {
 			continue
 		}
@@ -835,20 +838,26 @@ func DeploymentTimedOut(deployment *apps.Deployment, newStatus *apps.DeploymentS
 // 2) Max number of pods allowed is reached: deployment's replicas + maxSurge == all RSs' replicas
 func NewRSNewReplicas(deployment *apps.Deployment, allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet) (int32, error) {
 	switch deployment.Spec.Strategy.Type {
+	// 如果策略是滚动更新
 	case apps.RollingUpdateDeploymentStrategyType:
 		// Check if we can scale up.
+		// 获取最大的surge surge主要是比目前pod多出多少个
 		maxSurge, err := intstrutil.GetValueFromIntOrPercent(deployment.Spec.Strategy.RollingUpdate.MaxSurge, int(*(deployment.Spec.Replicas)), true)
 		if err != nil {
 			return 0, err
 		}
 		// Find the total number of pods
+		// 获取所有rs.replicas的累加值
 		currentPodCount := GetReplicaCountForReplicaSets(allRSs)
+		// 最大有多少个Pod
 		maxTotalPods := *(deployment.Spec.Replicas) + int32(maxSurge)
 		if currentPodCount >= maxTotalPods {
 			// Cannot scale up.
+			// 已经很多了
 			return *(newRS.Spec.Replicas), nil
 		}
 		// Scale up.
+		// 计算一个需要扩容的副本数
 		scaleUpCount := maxTotalPods - currentPodCount
 		// Do not exceed the number of desired replicas.
 		scaleUpCount = int32(integer.IntMin(int(scaleUpCount), int(*(deployment.Spec.Replicas)-*(newRS.Spec.Replicas))))
@@ -873,7 +882,7 @@ func IsSaturated(deployment *apps.Deployment, rs *apps.ReplicaSet) bool {
 	if err != nil {
 		return false
 	}
-	//
+	//rs.spec.replicas 是否和deployment.spec.replicas一致 并且rs.metadata.annotations一些字段是否和deployment.spec.replicas一致 如果一致就是饱和的
 	return *(rs.Spec.Replicas) == *(deployment.Spec.Replicas) &&
 		int32(desired) == *(deployment.Spec.Replicas) &&
 		rs.Status.AvailableReplicas == *(deployment.Spec.Replicas)

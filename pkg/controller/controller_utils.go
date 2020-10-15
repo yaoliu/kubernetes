@@ -111,6 +111,7 @@ func NoResyncPeriodFunc() time.Duration {
 func StaticResyncPeriodFunc(resyncPeriod time.Duration) ResyncPeriodFunc {
 	return func() time.Duration {
 		return resyncPeriod
+
 	}
 }
 

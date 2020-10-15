@@ -35,7 +35,7 @@ import (
 
 // syncStatusOnly only updates Deployments Status and doesn't take any mutating actions.
 func (dc *DeploymentController) syncStatusOnly(d *apps.Deployment, rsList []*apps.ReplicaSet) error {
-	// 获取new rs 和old rs
+	// 获取最新的rs 和 所有旧的 rs 并且同步revision
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, false)
 	if err != nil {
 		return err
@@ -126,11 +126,11 @@ func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error 
 // Note that currently the deployment controller is using caches to avoid querying the server for reads.
 // This may lead to stale reads of replica sets, thus incorrect deployment status.
 func (dc *DeploymentController) getAllReplicaSetsAndSyncRevision(d *apps.Deployment, rsList []*apps.ReplicaSet, createIfNotExisted bool) (*apps.ReplicaSet, []*apps.ReplicaSet, error) {
-	// 获取所有 old rs
+	// 获取所有 old rs 排除掉当前的 rs
 	_, allOldRSs := deploymentutil.FindOldReplicaSets(d, rsList)
 
 	// Get new replica set with the updated revision number
-	// 获取一个 new rs 并给这个rs设置一个revision号
+	// 获取 一个 Rs对象 如果不存在 就创建一个新的RS对象 如果存在就更新RS对象 主要更新revision
 	newRS, err := dc.getNewReplicaSet(d, rsList, allOldRSs, createIfNotExisted)
 	if err != nil {
 		return nil, nil, err
@@ -151,29 +151,31 @@ const (
 // Note that the pod-template-hash will be added to adopted RSes and pods.
 func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, oldRSs []*apps.ReplicaSet, createIfNotExisted bool) (*apps.ReplicaSet, error) {
 	// 获取最新的rs 根据ds.spec.template == rs.spec.template
+	// 根据rs 创建时间排序 判断ds.spec.template 和 rs.spec.template是否一样 一样rs为最新的rs
 	existingNewRS := deploymentutil.FindNewReplicaSet(d, rsList)
 
 	// Calculate the max revision number among all old RSes
-	// 1. 比较所有和ds有关的 old rs
+	// 1. 比较所有和deployment有关的 old rs
 	// 2. 根据rs.metadata.annotations[deployment.kubernetes.io/revision] 获取最大的rs版本，
 	// 3. 默认是0
 	maxOldRevision := deploymentutil.MaxRevision(oldRSs)
 	// Calculate revision number for this new replica set
-	// 4. 生成一个revision号
+	// 4. 生成一个新的revision
 	newRevision := strconv.FormatInt(maxOldRevision+1, 10)
 
 	// Latest replica set exists. We need to sync its annotations (includes copying all but
 	// annotationsToSkip from the parent deployment, and update revision, desiredReplicas,
 	// and maxReplicas) and also update the revision annotation in the deployment with the
 	// latest revision.
-	// 判断是否已经存在了最新的rs
+	// 判断是否已经存在了最新的rs 如果存在了 更新revision 并且返回这个rs对象
 	if existingNewRS != nil {
 		// 复制已经存在最新的的rs
 		rsCopy := existingNewRS.DeepCopy()
 
 		// Set existing new replica set's annotation
-		// 设置 new annotations
+		// 设置 new annotations 更新revision
 		annotationsUpdated := deploymentutil.SetNewReplicaSetAnnotations(d, rsCopy, newRevision, true, maxRevHistoryLengthInChars)
+		// 判断最新的rs.spec.MinReadySeconds 和 deployment.spec.MinReadySeconds是否一致
 		minReadySecondsNeedsUpdate := rsCopy.Spec.MinReadySeconds != d.Spec.MinReadySeconds
 		if annotationsUpdated || minReadySecondsNeedsUpdate {
 			rsCopy.Spec.MinReadySeconds = d.Spec.MinReadySeconds
@@ -181,7 +183,8 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 			return dc.client.AppsV1().ReplicaSets(rsCopy.ObjectMeta.Namespace).Update(context.TODO(), rsCopy, metav1.UpdateOptions{})
 		}
 
-		// Should use the revision in existingNewRS's annotation, since it set by before
+		// Should use the revision in existingNewRS's annotation, since it set by before\
+		// 设置deployment的revision 值为rs的revision
 		needsUpdate := deploymentutil.SetDeploymentRevision(d, rsCopy.Annotations[deploymentutil.RevisionAnnotation])
 		// If no other Progressing condition has been recorded and we need to estimate the progress
 		// of this deployment then it is likely that old users started caring about progress. In that
@@ -196,23 +199,24 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 
 		if needsUpdate {
 			var err error
+			// 更新状态
 			if _, err = dc.client.AppsV1().Deployments(d.Namespace).UpdateStatus(context.TODO(), d, metav1.UpdateOptions{}); err != nil {
 				return nil, err
 			}
 		}
 		return rsCopy, nil
 	}
-
+	// 判断是否需要创建Pod
 	if !createIfNotExisted {
 		return nil, nil
 	}
-
+	// 如果不存在最新的rs对象 那就创建一个rs对象
 	// new ReplicaSet does not exist, create one.
 	// new pod
 	newRSTemplate := *d.Spec.Template.DeepCopy()
 	// 计算一个hash pod.metadata.label pod-template-hash: 748c6fff66
 	podTemplateSpecHash := controller.ComputeHash(&newRSTemplate, d.Status.CollisionCount)
-	// 设置Pod的Label
+	// 复制deployment.spec.template.label 并且 添加新的label pod-template-hash 设置给pod.label
 	newRSTemplate.Labels = labelsutil.CloneAndAddLabel(d.Spec.Template.Labels, apps.DefaultDeploymentUniqueLabelKey, podTemplateSpecHash)
 	// Add podTemplateHash label to selector.
 	// 创建一个新的选择器
@@ -236,11 +240,12 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 		},
 	}
 	allRSs := append(oldRSs, &newRS)
+	// 计算一个副本数
 	newReplicasCount, err := deploymentutil.NewRSNewReplicas(d, allRSs, &newRS)
 	if err != nil {
 		return nil, err
 	}
-
+	// 设置新rs所需要的副本数
 	*(newRS.Spec.Replicas) = newReplicasCount
 	// Set new replica set's annotation
 	// 设置Annotations
@@ -254,6 +259,7 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 	switch {
 	// We may end up hitting this due to a slow cache or a fast resync of the Deployment.
 	case errors.IsAlreadyExists(err):
+		// 如果已经存在了这个rs 就获取这个rs 复制给rs对象
 		alreadyExists = true
 
 		// Fetch a copy of the ReplicaSet.
@@ -341,10 +347,9 @@ func (dc *DeploymentController) scale(deployment *apps.Deployment, newRS *apps.R
 
 	// If the new replica set is saturated, old replica sets should be fully scaled down.
 	// This case handles replica set adoption during a saturated new replica set.
-	// 判断当前rs是否饱和
+	// 判断当前rs是否饱和 如果饱和 就遍历old rs 进行删除 把old rs 的replicas == 0
 	if deploymentutil.IsSaturated(deployment, newRS) {
 		for _, old := range controller.FilterActiveReplicaSets(oldRSs) {
-			// del
 			if _, _, err := dc.scaleReplicaSetAndRecordEvent(old, 0, deployment); err != nil {
 				return err
 			}
@@ -355,18 +360,23 @@ func (dc *DeploymentController) scale(deployment *apps.Deployment, newRS *apps.R
 	// There are old replica sets with pods and the new replica set is not saturated.
 	// We need to proportionally scale all replica sets (new and old) in case of a
 	// rolling deployment.
+	// 判断策略是否为滚动更新
 	if deploymentutil.IsRollingUpdate(deployment) {
+		// 获取所有活跃的rs replicas>0
 		allRSs := controller.FilterActiveReplicaSets(append(oldRSs, newRS))
+		// 获取所有replicas的累加值
 		allRSsReplicas := deploymentutil.GetReplicaCountForReplicaSets(allRSs)
 
 		allowedSize := int32(0)
 		if *(deployment.Spec.Replicas) > 0 {
+			// 当前的replicas + maxsurge(最多可以比原有Pod多出多个Pod)
 			allowedSize = *(deployment.Spec.Replicas) + deploymentutil.MaxSurge(*deployment)
 		}
 
 		// Number of additional replicas that can be either added or removed from the total
 		// replicas count. These replicas should be distributed proportionally to the active
 		// replica sets.
+		// 计算出需要创建/删除的副本数
 		deploymentReplicasToAdd := allowedSize - allRSsReplicas
 
 		// The additional replicas should be distributed proportionally amongst the active
@@ -377,10 +387,12 @@ func (dc *DeploymentController) scale(deployment *apps.Deployment, newRS *apps.R
 		var scalingOperation string
 		switch {
 		case deploymentReplicasToAdd > 0:
+			//排序 从新到旧 然后确定扩容(up)
 			sort.Sort(controller.ReplicaSetsBySizeNewer(allRSs))
 			scalingOperation = "up"
 
 		case deploymentReplicasToAdd < 0:
+			//排序 从新到旧 然后确定缩容(up)
 			sort.Sort(controller.ReplicaSetsBySizeOlder(allRSs))
 			scalingOperation = "down"
 		}
@@ -396,6 +408,7 @@ func (dc *DeploymentController) scale(deployment *apps.Deployment, newRS *apps.R
 			// Estimate proportions if we have replicas to add, otherwise simply populate
 			// nameToSize with the current sizes for each replica set.
 			if deploymentReplicasToAdd != 0 {
+				// 计算出一个比例
 				proportion := deploymentutil.GetProportion(rs, *deployment, deploymentReplicasToAdd, deploymentReplicasAdded)
 
 				nameToSize[rs.Name] = *(rs.Spec.Replicas) + proportion
@@ -518,7 +531,7 @@ func (dc *DeploymentController) cleanupDeployment(oldRSs []*apps.ReplicaSet, dep
 
 // syncDeploymentStatus checks if the status is up-to-date and sync it if necessary
 func (dc *DeploymentController) syncDeploymentStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, d *apps.Deployment) error {
-	// 使用 ds的 all rs 和 new rs 计算最新的deployments.status
+	// 使用 deployments 所关联的 all rs 和 new rs 计算最新的deployments.status
 	newStatus := calculateStatus(allRSs, newRS, d)
 	// 判断deployments.status和newStatus是否一样
 	if reflect.DeepEqual(d.Status, newStatus) {
@@ -527,6 +540,7 @@ func (dc *DeploymentController) syncDeploymentStatus(allRSs []*apps.ReplicaSet, 
 	// 设置deployments.status
 	newDeployment := d
 	newDeployment.Status = newStatus
+	// 更新最新deployments状态
 	_, err := dc.client.AppsV1().Deployments(newDeployment.Namespace).UpdateStatus(context.TODO(), newDeployment, metav1.UpdateOptions{})
 	return err
 }
@@ -534,9 +548,11 @@ func (dc *DeploymentController) syncDeploymentStatus(allRSs []*apps.ReplicaSet, 
 // calculateStatus calculates the latest status for the provided deployment by looking into the provided replica sets.
 func calculateStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, deployment *apps.Deployment) apps.DeploymentStatus {
 	// 获取所有rs.status.availableReplicas的累加值
+	// 获取所有rs.status.AvailableReplicas(可用的副本数)的累加值
 	availableReplicas := deploymentutil.GetAvailableReplicaCountForReplicaSets(allRSs)
 	// 获取所有rs.spec.replicas的累加值
 	totalReplicas := deploymentutil.GetReplicaCountForReplicaSets(allRSs)
+	// 获取不可用的replicas
 	unavailableReplicas := totalReplicas - availableReplicas
 	// If unavailableReplicas is negative, then that means the Deployment has more available replicas running than
 	// desired, e.g. whenever it scales down. In such a case we should simply default unavailableReplicas to zero.
@@ -546,26 +562,33 @@ func calculateStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, deployme
 	// 创建ds的status
 	status := apps.DeploymentStatus{
 		// TODO: Ensure that if we start retrying status updates, we won't pick up a new Generation value.
-		ObservedGeneration:  deployment.Generation,
-		Replicas:            deploymentutil.GetActualReplicaCountForReplicaSets(allRSs),
-		UpdatedReplicas:     deploymentutil.GetActualReplicaCountForReplicaSets([]*apps.ReplicaSet{newRS}),
-		ReadyReplicas:       deploymentutil.GetReadyReplicaCountForReplicaSets(allRSs),
-		AvailableReplicas:   availableReplicas,
+		ObservedGeneration: deployment.Generation,
+		// 所有rs副本数
+		Replicas:        deploymentutil.GetActualReplicaCountForReplicaSets(allRSs),
+		UpdatedReplicas: deploymentutil.GetActualReplicaCountForReplicaSets([]*apps.ReplicaSet{newRS}),
+		// 已经就绪的副本数
+		ReadyReplicas: deploymentutil.GetReadyReplicaCountForReplicaSets(allRSs),
+		// 可用的副本数
+		AvailableReplicas: availableReplicas,
+		// 不可用的副本数
 		UnavailableReplicas: unavailableReplicas,
-		CollisionCount:      deployment.Status.CollisionCount,
+		// 用来计算hash的种子
+		CollisionCount: deployment.Status.CollisionCount,
 	}
 
 	// Copy conditions one by one so we won't mutate the original object.
-	// 把 ds对象的conditions都复制到status.conditions里
+	// 把当前的deployments.conditions都复制到status.conditions里
 	conditions := deployment.Status.Conditions
 	for i := range conditions {
 		status.Conditions = append(status.Conditions, conditions[i])
 	}
-
+	// 可有副本数 >= 当前副本数 - 最大不可用副本数
 	if availableReplicas >= *(deployment.Spec.Replicas)-deploymentutil.MaxUnavailable(*deployment) {
+		// 设置最小可用副本数状态
 		minAvailability := deploymentutil.NewDeploymentCondition(apps.DeploymentAvailable, v1.ConditionTrue, deploymentutil.MinimumReplicasAvailable, "Deployment has minimum availability.")
 		deploymentutil.SetDeploymentCondition(&status, *minAvailability)
 	} else {
+		// 设置最小不可用副本数状态
 		noMinAvailability := deploymentutil.NewDeploymentCondition(apps.DeploymentAvailable, v1.ConditionFalse, deploymentutil.MinimumReplicasUnavailable, "Deployment does not have minimum availability.")
 		deploymentutil.SetDeploymentCondition(&status, *noMinAvailability)
 	}

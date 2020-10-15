@@ -32,15 +32,18 @@ func (dc *DeploymentController) rolloutRecreate(d *apps.Deployment, rsList []*ap
 		return err
 	}
 	allRSs := append(oldRSs, newRS)
+	// 获取活跃的rs
 	activeOldRSs := controller.FilterActiveReplicaSets(oldRSs)
 
 	// scale down old replica sets.
+	// 将所有活跃的rs pod 都设置=0
 	scaledDown, err := dc.scaleDownOldReplicaSetsForRecreate(activeOldRSs, d)
 	if err != nil {
 		return err
 	}
 	if scaledDown {
 		// Update DeploymentStatus.
+		// 更新 deployment状态
 		return dc.syncRolloutStatus(allRSs, newRS, d)
 	}
 
@@ -76,12 +79,14 @@ func (dc *DeploymentController) rolloutRecreate(d *apps.Deployment, rsList []*ap
 // scaleDownOldReplicaSetsForRecreate scales down old replica sets when deployment strategy is "Recreate".
 func (dc *DeploymentController) scaleDownOldReplicaSetsForRecreate(oldRSs []*apps.ReplicaSet, deployment *apps.Deployment) (bool, error) {
 	scaled := false
+	// 遍历所有 old rs
 	for i := range oldRSs {
 		rs := oldRSs[i]
 		// Scaling not required.
 		if *(rs.Spec.Replicas) == 0 {
 			continue
 		}
+		// 更新rs.spec.replicas = 0
 		scaledRS, updatedRS, err := dc.scaleReplicaSetAndRecordEvent(rs, 0, deployment)
 		if err != nil {
 			return false, err

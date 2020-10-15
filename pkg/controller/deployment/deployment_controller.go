@@ -69,10 +69,12 @@ type DeploymentController struct {
 	// rsControl is used for adopting/releasing replica sets.
 	rsControl controller.RSControlInterface
 	// 用于访问apiserver的client
-	client        clientset.Interface
+	client clientset.Interface
+	// 事件记录器
 	eventRecorder record.EventRecorder
 
 	// To allow injection of syncDeployment for testing.
+	// 核心函数 同步
 	syncHandler func(dKey string) error
 	// used for unit testing
 	enqueueDeployment func(deployment *apps.Deployment)
@@ -635,7 +637,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	}
 	// 判断是否处于被删除状态
 	if d.DeletionTimestamp != nil {
-		// 如果处于删除状态 同步deployment状态
+		// 如果处于删除状态 根据rs计算出最新的deployment状态 并且进行同步
 		return dc.syncStatusOnly(d, rsList)
 	}
 
@@ -674,9 +676,10 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	// 根据不同策略来进行不同方式的更新
 	switch d.Spec.Strategy.Type {
 	case apps.RecreateDeploymentStrategyType:
+		// recreate 策略 会杀掉所有存在的Pod 然后重新创建Pod
 		return dc.rolloutRecreate(d, rsList, podMap)
 	case apps.RollingUpdateDeploymentStrategyType:
-		// 滚动更新
+		// 滚动更新 根据策略
 		return dc.rolloutRolling(d, rsList)
 	}
 	return fmt.Errorf("unexpected deployment strategy type: %s", d.Spec.Strategy.Type)
