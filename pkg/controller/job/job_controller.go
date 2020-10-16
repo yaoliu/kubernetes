@@ -480,7 +480,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	if len(ns) == 0 || len(name) == 0 {
 		return false, fmt.Errorf("invalid job key %q: either namespace or name is missing", key)
 	}
-	// 根据namespace和name获取Job
+	// 根据namespace和name获取Job对象
 	sharedJob, err := jm.jobLister.Jobs(ns).Get(name)
 	if err != nil {
 		if errors.IsNotFound(err) {
