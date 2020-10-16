@@ -89,7 +89,7 @@ type ReplicaSetController struct {
 	// 控制rs创建pod的上限
 	burstReplicas int
 	// To allow injection of syncReplicaSet for testing.
-
+	// 核心函数 用来同步rs对象
 	syncHandler func(rsKey string) error
 
 	// A TTLCache of pod creates/deletes each rc expects to see.
@@ -551,7 +551,7 @@ func (rsc *ReplicaSetController) processNextWorkItem() bool {
 // It will requeue the replica set in case of an error while creating/deleting pods.
 func (rsc *ReplicaSetController) manageReplicas(filteredPods []*v1.Pod, rs *apps.ReplicaSet) error {
 	// 计算已经存在的pod和rs期望副本数的差异
-	// 当前active pod - rs的pod副本数 如果=0 代表ok 如果小于0 需要创建余下pod 如果大于0 需要删除pod
+	// 当前active pod - rs的pod副本数 如果=0 代表正常 如果小于0 需要创建余下pod 如果大于0 需要删除pod
 	diff := len(filteredPods) - int(*(rs.Spec.Replicas))
 	// 根据rs对象获取rsKey
 	rsKey, err := controller.KeyFunc(rs)
@@ -676,7 +676,7 @@ func (rsc *ReplicaSetController) syncReplicaSet(key string) error {
 	defer func() {
 		klog.V(4).Infof("Finished syncing %v %q (%v)", rsc.Kind, key, time.Since(startTime))
 	}()
-	// 将key切分为namespace和name 例如:defalut/pi 切分为default和pi pi为JobName default为namespace
+	// 将key切分为namespace和name 例如:defalut/nginx-748c6fff66 切分为default和nginx-748c6fff66 nginx-748c6fff66为ReplicaSetName default为namespace
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -709,7 +709,7 @@ func (rsc *ReplicaSetController) syncReplicaSet(key string) error {
 		return err
 	}
 	// Ignore inactive pods.
-	// 过滤active的pod
+	// 获取所有活跃的pod
 	filteredPods := controller.FilterActivePods(allPods)
 
 	// NOTE: filteredPods are pointing to objects from cache - if you need to
@@ -721,12 +721,12 @@ func (rsc *ReplicaSetController) syncReplicaSet(key string) error {
 	}
 
 	var manageReplicasErr error
-	// 判断是否需要同步 及 当前rs对象是否处于删除中
+	// 判断是否需要同步及当前rs对象是否处于删除中
 	if rsNeedsSync && rs.DeletionTimestamp == nil {
 		manageReplicasErr = rsc.manageReplicas(filteredPods, rs)
 	}
 	rs = rs.DeepCopy()
-	// 计算当前rs的状态
+	// 计算最新的rs状态
 	newStatus := calculateStatus(rs, filteredPods, manageReplicasErr)
 
 	// Always updates status as pods come up or die.

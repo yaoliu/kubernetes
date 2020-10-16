@@ -91,13 +91,16 @@ func calculateStatus(rs *apps.ReplicaSet, filteredPods []*v1.Pod, manageReplicas
 	// a superset of the selector of the replica set, so the possible
 	// matching pods must be part of the filteredPods.
 	fullyLabeledReplicasCount := 0
+	// 就绪副本数
 	readyReplicasCount := 0
+	// 可用副本数
 	availableReplicasCount := 0
 	templateLabel := labels.Set(rs.Spec.Template.Labels).AsSelectorPreValidated()
 	for _, pod := range filteredPods {
 		if templateLabel.Matches(labels.Set(pod.Labels)) {
 			fullyLabeledReplicasCount++
 		}
+		// 判断Pod是否就绪
 		if podutil.IsPodReady(pod) {
 			readyReplicasCount++
 			if podutil.IsPodAvailable(pod, rs.Spec.MinReadySeconds, metav1.Now()) {
@@ -119,10 +122,12 @@ func calculateStatus(rs *apps.ReplicaSet, filteredPods []*v1.Pod, manageReplicas
 	} else if manageReplicasErr == nil && failureCond != nil {
 		RemoveCondition(&newStatus, apps.ReplicaSetReplicaFailure)
 	}
-
+	// 副本数
 	newStatus.Replicas = int32(len(filteredPods))
 	newStatus.FullyLabeledReplicas = int32(fullyLabeledReplicasCount)
+	// 就绪副本数
 	newStatus.ReadyReplicas = int32(readyReplicasCount)
+	// 可用的副本数
 	newStatus.AvailableReplicas = int32(availableReplicasCount)
 	return newStatus
 }
