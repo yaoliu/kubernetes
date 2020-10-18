@@ -32,19 +32,23 @@ import (
 
 // rollback the deployment to the specified revision. In any case cleanup the rollback spec.
 func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.ReplicaSet) error {
+	// 获取最新的rs 和 old rs
 	newRS, allOldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, true)
 	if err != nil {
 		return err
 	}
 
 	allRSs := append(allOldRSs, newRS)
+	// 获取要回滚的revision
 	rollbackTo := getRollbackTo(d)
 	// If rollback revision is 0, rollback to the last revision
 	if rollbackTo.Revision == 0 {
+		// 判断目前最新的版本是否==0 如果是放弃回滚
 		if rollbackTo.Revision = deploymentutil.LastRevision(allRSs); rollbackTo.Revision == 0 {
 			// If we still can't find the last revision, gives up rollback
 			dc.emitRollbackWarningEvent(d, deploymentutil.RollbackRevisionNotFound, "Unable to find last revision.")
 			// Gives up rollback
+			// 放弃回滚 清理deployment.metadata.annotations[deprecated.deployment.rollback.to]字段
 			return dc.updateDeploymentAndClearRollbackTo(d)
 		}
 	}
@@ -59,6 +63,7 @@ func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.Repl
 			// rollback by copying podTemplate.Spec from the replica set
 			// revision number will be incremented during the next getAllReplicaSetsAndSyncRevision call
 			// no-op if the spec matches current deployment's podTemplate.Spec
+			// 如果匹配到 就进行回滚操作
 			performedRollback, err := dc.rollbackToTemplate(d, rs)
 			if performedRollback && err == nil {
 				dc.emitRollbackNormalEvent(d, fmt.Sprintf("Rolled back deployment %q to revision %d", d.Name, rollbackTo.Revision))
@@ -68,6 +73,7 @@ func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.Repl
 	}
 	dc.emitRollbackWarningEvent(d, deploymentutil.RollbackRevisionNotFound, "Unable to find the revision to rollback to.")
 	// Gives up rollback
+	// 放弃回滚 清理deployment.metadata.annotations[deprecated.deployment.rollback.to]字段
 	return dc.updateDeploymentAndClearRollbackTo(d)
 }
 
@@ -76,8 +82,10 @@ func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.Repl
 // cleans up the rollback spec so subsequent requeues of the deployment won't end up in here.
 func (dc *DeploymentController) rollbackToTemplate(d *apps.Deployment, rs *apps.ReplicaSet) (bool, error) {
 	performedRollback := false
+	// 判断deployment.spec.template 和 rs.spec.template是否一致 如果不一致 进行回滚
 	if !deploymentutil.EqualIgnoreHash(&d.Spec.Template, &rs.Spec.Template) {
 		klog.V(4).Infof("Rolling back deployment %q to template spec %+v", d.Name, rs.Spec.Template.Spec)
+		// 将deploymentd.sepc.template替换为回滚版本的rs.spec.template
 		deploymentutil.SetFromReplicaSetTemplate(d, rs.Spec.Template)
 		// set RS (the old RS we'll rolling back to) annotations back to the deployment;
 		// otherwise, the deployment's current annotations (should be the same as current new RS) will be copied to the RS after the rollback.
@@ -90,6 +98,7 @@ func (dc *DeploymentController) rollbackToTemplate(d *apps.Deployment, rs *apps.
 		//
 		// If we don't copy the annotations back from RS to deployment on rollback, the Deployment will stay as {change-cause:edit},
 		// and new RS1 becomes {change-cause:edit} (copied from deployment after rollback), old RS2 {change-cause:edit}, which is not correct.
+		// 设置注解
 		deploymentutil.SetDeploymentAnnotationsTo(d, rs)
 		performedRollback = true
 	} else {
@@ -97,7 +106,7 @@ func (dc *DeploymentController) rollbackToTemplate(d *apps.Deployment, rs *apps.
 		eventMsg := fmt.Sprintf("The rollback revision contains the same template as current deployment %q", d.Name)
 		dc.emitRollbackWarningEvent(d, deploymentutil.RollbackTemplateUnchanged, eventMsg)
 	}
-
+	// 如果回滚完毕 清理相关字段更新状态
 	return performedRollback, dc.updateDeploymentAndClearRollbackTo(d)
 }
 
@@ -114,7 +123,9 @@ func (dc *DeploymentController) emitRollbackNormalEvent(d *apps.Deployment, mess
 // we want to rollback).
 func (dc *DeploymentController) updateDeploymentAndClearRollbackTo(d *apps.Deployment) error {
 	klog.V(4).Infof("Cleans up rollbackTo of deployment %q", d.Name)
+	// 清理回滚标示
 	setRollbackTo(d, nil)
+	// 更新状态
 	_, err := dc.client.AppsV1().Deployments(d.Namespace).Update(context.TODO(), d, metav1.UpdateOptions{})
 	return err
 }

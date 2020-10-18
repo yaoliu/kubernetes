@@ -74,16 +74,19 @@ type DeploymentController struct {
 	eventRecorder record.EventRecorder
 
 	// To allow injection of syncDeployment for testing.
-	// 核心函数 同步
+	// 核心函数 用来同步
 	syncHandler func(dKey string) error
 	// used for unit testing
 	enqueueDeployment func(deployment *apps.Deployment)
 
 	// dLister can list/get deployments from the shared informer's store
+	// 用于获取deployment元数据
 	dLister appslisters.DeploymentLister
 	// rsLister can list/get replica sets from the shared informer's store
+	// 用于获取replicaSet元数据
 	rsLister appslisters.ReplicaSetLister
 	// podLister can list/get pods from the shared informer's store
+	// 用于获取pod元数据
 	podLister corelisters.PodLister
 
 	// dListerSynced returns true if the Deployment store has been synced at least once.
@@ -124,18 +127,20 @@ func NewDeploymentController(dInformer appsinformers.DeploymentInformer, rsInfor
 		KubeClient: client,
 		Recorder:   dc.eventRecorder,
 	}
-
+	// 监听watch deployment add/update/delete等事件 并且调用对应事件注册的函数
 	dInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    dc.addDeployment,
 		UpdateFunc: dc.updateDeployment,
 		// This will enter the sync loop and no-op, because the deployment has been deleted from the store.
 		DeleteFunc: dc.deleteDeployment,
 	})
+	// 监听watch replicaSet add/update/delete等事件 并且调用对应事件注册的函数
 	rsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    dc.addReplicaSet,
 		UpdateFunc: dc.updateReplicaSet,
 		DeleteFunc: dc.deleteReplicaSet,
 	})
+	// 监听watch pod delete等事件 并且调用对应事件注册的函数
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		DeleteFunc: dc.deletePod,
 	})
@@ -159,7 +164,7 @@ func (dc *DeploymentController) Run(workers int, stopCh <-chan struct{}) {
 
 	klog.Infof("Starting deployment controller")
 	defer klog.Infof("Shutting down deployment controller")
-
+	// 等待cache同步完成
 	if !cache.WaitForNamedCacheSync("deployment", stopCh, dc.dListerSynced, dc.rsListerSynced, dc.podListerSynced) {
 		return
 	}
@@ -416,6 +421,7 @@ func (dc *DeploymentController) enqueueAfter(deployment *apps.Deployment, after 
 // getDeploymentForPod returns the deployment managing the given Pod.
 func (dc *DeploymentController) getDeploymentForPod(pod *v1.Pod) *apps.Deployment {
 	// Find the owning replica set
+	// 根据Pod获取所属deployment
 	var rs *apps.ReplicaSet
 	var err error
 	controllerRef := metav1.GetControllerOf(pod)
@@ -470,10 +476,12 @@ func (dc *DeploymentController) worker() {
 }
 
 func (dc *DeploymentController) processNextWorkItem() bool {
+	// 从queue队列获取一个deploymentKey deploymentKey的格式为{nameSpace}/{deploymentName} 例如:default/nginx
 	key, quit := dc.queue.Get()
 	if quit {
 		return false
 	}
+	// 用完需要告知队列
 	defer dc.queue.Done(key)
 
 	err := dc.syncHandler(key.(string))
@@ -607,7 +615,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	d := deployment.DeepCopy()
 	// 创建选择器
 	everything := metav1.LabelSelector{}
-	// 判断ds.spec.selector 的类型和everything是否一样 比较结构体深度
+	// 判断ds.spec.selector 的类型和everything是否一样
 	if reflect.DeepEqual(d.Spec.Selector, &everything) {
 		// 如果一样 表示这个对象匹配所有pod
 		dc.eventRecorder.Eventf(d, v1.EventTypeWarning, "SelectingAll", "This deployment is selecting all pods. A non-empty selector is required.")
@@ -630,7 +638,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	//
 	// * check if a Pod is labeled correctly with the pod-template-hash label.
 	// * check that no old Pods are running in the middle of Recreate Deployments.
-	// 获取deployment下rs下所有关联的Pod
+	// 获取deployment下和rs所有关联的Pod
 	podMap, err := dc.getPodMapForDeployment(d, rsList)
 	if err != nil {
 		return err
@@ -659,7 +667,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	// make sure that the deployment has cleaned up its rollback spec in subsequent enqueues.
 	// 检查是否为回滚操作 如果有deployment.metadata.annotations[deprecated.deployment.rollback.to]字段 就进行回滚
 	if getRollbackTo(d) != nil {
-		// 回滚
+		// 回滚操作
 		return dc.rollback(d, rsList)
 	}
 	// 判断是否处于scaling 扩容/缩容状态
@@ -679,7 +687,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 		// recreate 策略 会杀掉所有存在的Pod 然后重新创建Pod
 		return dc.rolloutRecreate(d, rsList, podMap)
 	case apps.RollingUpdateDeploymentStrategyType:
-		// 滚动更新 根据策略
+		// 滚动更新 如果是新创建的deployments 会先走到这里来进行创建
 		return dc.rolloutRolling(d, rsList)
 	}
 	return fmt.Errorf("unexpected deployment strategy type: %s", d.Spec.Strategy.Type)
