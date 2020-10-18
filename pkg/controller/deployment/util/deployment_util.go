@@ -452,6 +452,7 @@ func MaxUnavailable(deployment apps.Deployment) int32 {
 		return int32(0)
 	}
 	// Error caught by validation
+	// 计算最大不可用Pod数
 	_, maxUnavailable, _ := ResolveFenceposts(deployment.Spec.Strategy.RollingUpdate.MaxSurge, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable, *(deployment.Spec.Replicas))
 	if maxUnavailable > *deployment.Spec.Replicas {
 		return *deployment.Spec.Replicas
@@ -846,6 +847,8 @@ func NewRSNewReplicas(deployment *apps.Deployment, allRSs []*apps.ReplicaSet, ne
 	case apps.RollingUpdateDeploymentStrategyType:
 		// Check if we can scale up.
 		// 获取最大的surge surge主要是比目前pod多出多少个
+		// 计算公式 如果是百分比 int(math.Ceil(float64(deployment.Spec.Strategy.RollingUpdate.MaxSurge(25%)) * (float64(deployment.Spec.Replicas)) / 100))
+		// 如果MaxSurge = 25 & Replicas = 10 那么 计算出的maxSurge = 3 roundUp 为是否向上取整
 		maxSurge, err := intstrutil.GetValueFromIntOrPercent(deployment.Spec.Strategy.RollingUpdate.MaxSurge, int(*(deployment.Spec.Replicas)), true)
 		if err != nil {
 			return 0, err
@@ -853,8 +856,9 @@ func NewRSNewReplicas(deployment *apps.Deployment, allRSs []*apps.ReplicaSet, ne
 		// Find the total number of pods
 		// 获取所有rs.replicas的累加值
 		currentPodCount := GetReplicaCountForReplicaSets(allRSs)
-		// 最大有多少个Pod
+		// 最多允许有多少个Pod
 		maxTotalPods := *(deployment.Spec.Replicas) + int32(maxSurge)
+		// 如果副本总数大于最多Pod数 那么意味着Pod已经超过限制了 需要删除多余的
 		if currentPodCount >= maxTotalPods {
 			// Cannot scale up.
 			// 已经很多了
@@ -864,6 +868,7 @@ func NewRSNewReplicas(deployment *apps.Deployment, allRSs []*apps.ReplicaSet, ne
 		// 计算一个需要扩容的副本数
 		scaleUpCount := maxTotalPods - currentPodCount
 		// Do not exceed the number of desired replicas.
+		// 如果new rs 是刚创建的 这个地方应该是取scaleUpCount
 		scaleUpCount = int32(integer.IntMin(int(scaleUpCount), int(*(deployment.Spec.Replicas)-*(newRS.Spec.Replicas))))
 		return *(newRS.Spec.Replicas) + scaleUpCount, nil
 	case apps.RecreateDeploymentStrategyType:
@@ -917,6 +922,11 @@ func WaitForObservedDeployment(getDeploymentFunc func() (*apps.Deployment, error
 func ResolveFenceposts(maxSurge, maxUnavailable *intstrutil.IntOrString, desired int32) (int32, int32, error) {
 	// maxSurge 在升级的过程中,最多可以比原有Pod多设置出的Pod数量
 	// maxUnavailable 在升级过程中,最多有百分之多少个Pod可以暂时无法提供服务
+	// deployment.Spec.Strategy.RollingUpdate.MaxSurge = 25%
+	// deployment.Spec.Strategy.RollingUpdate.MaxUnavailable = 25%
+	// 如果deployment.Spec.Replicas = 10
+	// surge = (MaxSurge * Replicas / 100 ) = (25 * 10 / 100) 向上取整 = 3
+	// unavailable = (MaxUnavailable * Replicas / 100 ) = (25 * 10 / 100) 向下取整 = 2
 	surge, err := intstrutil.GetValueFromIntOrPercent(intstrutil.ValueOrDefault(maxSurge, intstrutil.FromInt(0)), int(desired), true)
 	if err != nil {
 		return 0, 0, err

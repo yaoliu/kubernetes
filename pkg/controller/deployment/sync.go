@@ -151,7 +151,7 @@ const (
 // Note that the pod-template-hash will be added to adopted RSes and pods.
 func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, oldRSs []*apps.ReplicaSet, createIfNotExisted bool) (*apps.ReplicaSet, error) {
 	// 获取最新的rs 根据ds.spec.template == rs.spec.template
-	// 根据rs 创建时间排序 判断ds.spec.template 和 rs.spec.template是否一样 一样rs为最新的rs
+	// 根据rs 创建时间排序 判断ds.spec.template 和 rs.spec.template是否一样 如果一样把这个rs设定为最新的rs
 	existingNewRS := deploymentutil.FindNewReplicaSet(d, rsList)
 
 	// Calculate the max revision number among all old RSes
@@ -160,7 +160,7 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 	// 3. 默认是0
 	maxOldRevision := deploymentutil.MaxRevision(oldRSs)
 	// Calculate revision number for this new replica set
-	// 4. 生成一个新的revision 如果当前存在最新的rs 这个新的revision和当前最新的rs其实是一致的
+	// 4. 生成一个新的revision
 	newRevision := strconv.FormatInt(maxOldRevision+1, 10)
 
 	// Latest replica set exists. We need to sync its annotations (includes copying all but
@@ -173,7 +173,7 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 		rsCopy := existingNewRS.DeepCopy()
 
 		// Set existing new replica set's annotation
-		// 设置 new annotations 更新revision值
+		// 设置 new rs annotations 更新revision值
 		annotationsUpdated := deploymentutil.SetNewReplicaSetAnnotations(d, rsCopy, newRevision, true, maxRevHistoryLengthInChars)
 		// 判断最新的rs.spec.MinReadySeconds 和 deployment.spec.MinReadySeconds是否一致
 		minReadySecondsNeedsUpdate := rsCopy.Spec.MinReadySeconds != d.Spec.MinReadySeconds

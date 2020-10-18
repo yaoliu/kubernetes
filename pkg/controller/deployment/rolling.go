@@ -67,6 +67,7 @@ func (dc *DeploymentController) rolloutRolling(d *apps.Deployment, rsList []*app
 	}
 
 	// Sync deployment status
+	// 同步状态
 	return dc.syncRolloutStatus(allRSs, newRS, d)
 }
 
@@ -99,10 +100,10 @@ func (dc *DeploymentController) reconcileOldReplicaSets(allRSs []*apps.ReplicaSe
 		// Can't scale down further
 		return false, nil
 	}
-	// 统计所有 rs的副本数
+	// 统计所有rs的副本数
 	allPodsCount := deploymentutil.GetReplicaCountForReplicaSets(allRSs)
 	klog.V(4).Infof("New replica set %s/%s has %d available pods.", newRS.Namespace, newRS.Name, newRS.Status.AvailableReplicas)
-	// 最大不可用Pod数
+	// 计算最大不可用Pod数
 	maxUnavailable := deploymentutil.MaxUnavailable(*deployment)
 
 	// Check if we can scale down. We can scale down in the following 2 cases:
@@ -135,8 +136,11 @@ func (dc *DeploymentController) reconcileOldReplicaSets(allRSs []*apps.ReplicaSe
 	// * The new replica set created must start with 0 replicas because allPodsCount is already at 13.
 	// * However, newRSPodsUnavailable would also be 0, so the 2 old replica sets could be scaled down by 5 (13 - 8 - 0), which would then
 	// allow the new replica set to be scaled up by 5.
+	// 计算最小可用副本数
 	minAvailable := *(deployment.Spec.Replicas) - maxUnavailable
+	// 计算new rs 不可用副本数
 	newRSUnavailablePodCount := *(newRS.Spec.Replicas) - newRS.Status.AvailableReplicas
+	// 计算缩容的副本数
 	maxScaledDown := allPodsCount - minAvailable - newRSUnavailablePodCount
 	if maxScaledDown <= 0 {
 		return false, nil
@@ -164,15 +168,18 @@ func (dc *DeploymentController) reconcileOldReplicaSets(allRSs []*apps.ReplicaSe
 
 // cleanupUnhealthyReplicas will scale down old replica sets with unhealthy replicas, so that all unhealthy replicas will be deleted.
 func (dc *DeploymentController) cleanupUnhealthyReplicas(oldRSs []*apps.ReplicaSet, deployment *apps.Deployment, maxCleanupCount int32) ([]*apps.ReplicaSet, int32, error) {
+	// 将old rs 根据创建时间进行排序
 	sort.Sort(controller.ReplicaSetsByCreationTimestamp(oldRSs))
 	// Safely scale down all old replica sets with unhealthy replicas. Replica set will sort the pods in the order
 	// such that not-ready < ready, unscheduled < scheduled, and pending < running. This ensures that unhealthy replicas will
 	// been deleted first and won't increase unavailability.
 	totalScaledDown := int32(0)
+	// 遍历所有old rs
 	for i, targetRS := range oldRSs {
 		if totalScaledDown >= maxCleanupCount {
 			break
 		}
+		// 如果 old rs 副本数 =0 那就不需要清理
 		if *(targetRS.Spec.Replicas) == 0 {
 			// cannot scale down this replica set.
 			continue

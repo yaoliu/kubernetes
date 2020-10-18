@@ -687,7 +687,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 		// recreate 策略 会杀掉所有存在的Pod 然后重新创建Pod
 		return dc.rolloutRecreate(d, rsList, podMap)
 	case apps.RollingUpdateDeploymentStrategyType:
-		// 滚动更新 如果是新创建的deployments 会先走到这里来进行创建
+		// 滚动更新 如果是新创建的deployments 会先走到这里来进行创建 或者修改
 		return dc.rolloutRolling(d, rsList)
 	}
 	return fmt.Errorf("unexpected deployment strategy type: %s", d.Spec.Strategy.Type)
