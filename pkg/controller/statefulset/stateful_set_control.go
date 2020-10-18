@@ -75,12 +75,14 @@ type defaultStatefulSetControl struct {
 func (ssc *defaultStatefulSetControl) UpdateStatefulSet(set *apps.StatefulSet, pods []*v1.Pod) error {
 
 	// list all revisions and sort them
+	// 获取所有历史ControllerRevisions
 	revisions, err := ssc.ListRevisions(set)
 	if err != nil {
 		return err
 	}
+	// 根据创建时间进行排序
 	history.SortControllerRevisions(revisions)
-
+	// 执行更新操作 并获取相关current revision update revision
 	currentRevision, updateRevision, err := ssc.performUpdate(set, pods, revisions)
 	if err != nil {
 		return utilerrors.NewAggregate([]error{err, ssc.truncateHistory(set, pods, revisions, currentRevision, updateRevision)})
@@ -94,6 +96,7 @@ func (ssc *defaultStatefulSetControl) performUpdate(
 	set *apps.StatefulSet, pods []*v1.Pod, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, error) {
 
 	// get the current, and update revisions
+	// 获取 current update revision，版本数量
 	currentRevision, updateRevision, collisionCount, err := ssc.getStatefulSetRevisions(set, revisions)
 	if err != nil {
 		return currentRevision, updateRevision, err
@@ -203,8 +206,9 @@ func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 	set *apps.StatefulSet,
 	revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, int32, error) {
 	var currentRevision, updateRevision *apps.ControllerRevision
-
+	// 计算ControllerRevision数量
 	revisionCount := len(revisions)
+	// 排序
 	history.SortControllerRevisions(revisions)
 
 	// Use a local copy of set.Status.CollisionCount to avoid modifying set.Status directly.

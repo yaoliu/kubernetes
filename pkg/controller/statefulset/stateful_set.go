@@ -51,6 +51,7 @@ var controllerKind = apps.SchemeGroupVersion.WithKind("StatefulSet")
 // StatefulSetController controls statefulsets.
 type StatefulSetController struct {
 	// client interface
+	// 用于访问apiserver的client
 	kubeClient clientset.Interface
 	// control returns an interface capable of syncing a stateful set.
 	// Abstracted out for testing.
@@ -58,10 +59,12 @@ type StatefulSetController struct {
 	// podControl is used for patching pods.
 	podControl controller.PodControlInterface
 	// podLister is able to list/get pods from a shared informer's store
+	// 用于获取pod元数据
 	podLister corelisters.PodLister
 	// podListerSynced returns true if the pod shared informer has synced at least once
 	podListerSynced cache.InformerSynced
 	// setLister is able to list/get stateful sets from a shared informer's store
+	// 用于获取 statefulSet 元数据
 	setLister appslisters.StatefulSetLister
 	// setListerSynced returns true if the stateful set shared informer has synced at least once
 	setListerSynced cache.InformerSynced
@@ -414,6 +417,7 @@ func (ssc *StatefulSetController) sync(key string) error {
 	if err != nil {
 		return err
 	}
+	// 获取sts对象
 	set, err := ssc.setLister.StatefulSets(namespace).Get(name)
 	if errors.IsNotFound(err) {
 		klog.Infof("StatefulSet has been deleted %v", key)
@@ -423,7 +427,7 @@ func (ssc *StatefulSetController) sync(key string) error {
 		utilruntime.HandleError(fmt.Errorf("unable to retrieve StatefulSet %v from store: %v", key, err))
 		return err
 	}
-
+	// 创建选择器
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("error converting StatefulSet %v selector: %v", key, err))
@@ -434,12 +438,12 @@ func (ssc *StatefulSetController) sync(key string) error {
 	if err := ssc.adoptOrphanRevisions(set); err != nil {
 		return err
 	}
-
+	// 获取所有Pod
 	pods, err := ssc.getPodsForStatefulSet(set, selector)
 	if err != nil {
 		return err
 	}
-
+	// 同步
 	return ssc.syncStatefulSet(set, pods)
 }
 
