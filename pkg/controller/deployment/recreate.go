@@ -65,7 +65,7 @@ func (dc *DeploymentController) rolloutRecreate(d *apps.Deployment, rsList []*ap
 	}
 
 	// scale up new replica set.
-	// 对replica进行扩容
+	// 对新的rs进行扩容
 	if _, err := dc.scaleUpNewReplicaSetForRecreate(newRS, d); err != nil {
 		return err
 	}
@@ -107,10 +107,11 @@ func (dc *DeploymentController) scaleDownOldReplicaSetsForRecreate(oldRSs []*app
 
 // oldPodsRunning returns whether there are old pods running or any of the old ReplicaSets thinks that it runs pods.
 func oldPodsRunning(newRS *apps.ReplicaSet, oldRSs []*apps.ReplicaSet, podMap map[types.UID][]*v1.Pod) bool {
-	// 判断所有rs的副本累加值是否大于0 如果是 代表有pod运行
+	// 判断所有rs的副本累加值是否大于0 如果大于0 代表有pod运行
 	if oldPods := util.GetActualReplicaCountForReplicaSets(oldRSs); oldPods > 0 {
 		return true
 	}
+	// 遍历所有Pod 判断每个Pod的状态
 	for rsUID, podList := range podMap {
 		// If the pods belong to the new ReplicaSet, ignore.
 		if newRS != nil && newRS.UID == rsUID {
