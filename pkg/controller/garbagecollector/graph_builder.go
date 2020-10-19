@@ -103,6 +103,7 @@ type GraphBuilder struct {
 	// be non-existent are added to the cached.
 	absentOwnerCache *UIDCache
 	sharedInformers  controller.InformerFactory
+	// 忽略的资源 这些资源将不进行监听
 	ignoredResources map[schema.GroupResource]struct{}
 }
 
@@ -125,6 +126,7 @@ func (m *monitor) Run() {
 type monitors map[schema.GroupVersionResource]*monitor
 
 func (gb *GraphBuilder) controllerFor(resource schema.GroupVersionResource, kind schema.GroupVersionKind) (cache.Controller, cache.Store, error) {
+	// 为每个resource5  注册 AddFunc，UpdateFunc，DeleteFunc 监听相关资源的变动 并添加到graphChanges队列中
 	handlers := cache.ResourceEventHandlerFuncs{
 		// add the event to the dependencyGraphBuilder's graphChanges.
 		AddFunc: func(obj interface{}) {
@@ -159,6 +161,7 @@ func (gb *GraphBuilder) controllerFor(resource schema.GroupVersionResource, kind
 			gb.graphChanges.Add(event)
 		},
 	}
+	// 获取infomer controller infomer store
 	shared, err := gb.sharedInformers.ForResource(resource)
 	if err != nil {
 		klog.V(4).Infof("unable to use a shared informer for resource %q, kind %q: %v", resource.String(), kind.String(), err)
@@ -179,7 +182,7 @@ func (gb *GraphBuilder) controllerFor(resource schema.GroupVersionResource, kind
 func (gb *GraphBuilder) syncMonitors(resources map[schema.GroupVersionResource]struct{}) error {
 	gb.monitorLock.Lock()
 	defer gb.monitorLock.Unlock()
-
+	//
 	toRemove := gb.monitors
 	if toRemove == nil {
 		toRemove = monitors{}
@@ -188,7 +191,9 @@ func (gb *GraphBuilder) syncMonitors(resources map[schema.GroupVersionResource]s
 	errs := []error{}
 	kept := 0
 	added := 0
+	// 遍历所有资源
 	for resource := range resources {
+		// 如果资源在忽略资源里 那么要continue 表示此资源不监听
 		if _, ok := gb.ignoredResources[resource.GroupResource()]; ok {
 			continue
 		}
@@ -198,11 +203,13 @@ func (gb *GraphBuilder) syncMonitors(resources map[schema.GroupVersionResource]s
 			kept++
 			continue
 		}
+		// 将resource 转为 kind
 		kind, err := gb.restMapper.KindFor(resource)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("couldn't look up resource %q: %v", resource, err))
 			continue
 		}
+		// 为 resource 注册 event handler 并获取controller 和 store
 		c, s, err := gb.controllerFor(resource, kind)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("couldn't start monitor for resource %q: %v", resource, err))
@@ -239,10 +246,12 @@ func (gb *GraphBuilder) startMonitors() {
 
 	// we're waiting until after the informer start that happens once all the controllers are initialized.  This ensures
 	// that they don't get unexpected events on their work queues.
+	// 等待infomers
 	<-gb.informersStarted
 
 	monitors := gb.monitors
 	started := 0
+	// 遍历所有monitors 启动对应的 infomers
 	for _, monitor := range monitors {
 		if monitor.stopCh == nil {
 			monitor.stopCh = make(chan struct{})
@@ -290,10 +299,13 @@ func (gb *GraphBuilder) Run(stopCh <-chan struct{}) {
 
 	// Start monitors and begin change processing until the stop channel is
 	// closed.
+	// 启动 monitor
 	gb.startMonitors()
+	// 调用gb.runProcessGraphChanges 处理队列中的数据 当收到stopCh会停止 并且执行下面的操作
 	wait.Until(gb.runProcessGraphChanges, 1*time.Second, stopCh)
 
 	// Stop any running monitors.
+	// 停止所有运行的infomers
 	gb.monitorLock.Lock()
 	defer gb.monitorLock.Unlock()
 	monitors := gb.monitors
@@ -339,7 +351,9 @@ func (gb *GraphBuilder) enqueueVirtualDeleteEvent(ref objectReference) {
 // attemptToDeleteItem() will verify if the owner exists according to the API server.
 func (gb *GraphBuilder) addDependentToOwners(n *node, owners []metav1.OwnerReference) {
 	for _, owner := range owners {
+		// 获取所属者对象
 		ownerNode, ok := gb.uidToNode.Read(owner.UID)
+		// 如果不存在
 		if !ok {
 			// Create a "virtual" node in the graph for the owner if it doesn't
 			// exist in the graph yet.
@@ -368,7 +382,9 @@ func (gb *GraphBuilder) addDependentToOwners(n *node, owners []metav1.OwnerRefer
 // insertNode insert the node to gb.uidToNode; then it finds all owners as listed
 // in n.owners, and adds the node to their dependents list.
 func (gb *GraphBuilder) insertNode(n *node) {
+	// 添加到uidToNode.uidToNode
 	gb.uidToNode.Write(n)
+	// 添加到所属者的.
 	gb.addDependentToOwners(n, n.owners)
 }
 
@@ -524,17 +540,21 @@ func (gb *GraphBuilder) runProcessGraphChanges() {
 
 // Dequeueing an event from graphChanges, updating graph, populating dirty_queue.
 func (gb *GraphBuilder) processGraphChanges() bool {
+	// 从队列里获取obj
 	item, quit := gb.graphChanges.Get()
 	if quit {
 		return false
 	}
+	// 用完需要告知队列
 	defer gb.graphChanges.Done(item)
+	// 转换为event对象
 	event, ok := item.(*event)
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("expect a *event, got %v", item))
 		return true
 	}
 	obj := event.obj
+	// 获取metadata对象
 	accessor, err := meta.Accessor(obj)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("cannot access obj: %v", err))
@@ -542,6 +562,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 	}
 	klog.V(5).Infof("GraphBuilder process object: %s/%s, namespace %s, name %s, uid %s, event type %v", event.gvk.GroupVersion().String(), event.gvk.Kind, accessor.GetNamespace(), accessor.GetName(), string(accessor.GetUID()), event.eventType)
 	// Check if the node already exists
+	//  检查是否已经存在node对象
 	existingNode, found := gb.uidToNode.Read(accessor.GetUID())
 	if found {
 		// this marks the node as having been observed via an informer event
@@ -550,7 +571,9 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 		existingNode.markObserved()
 	}
 	switch {
+	// 判断 event 类型是add 或者 update 以及node对象不存在的时
 	case (event.eventType == addEvent || event.eventType == updateEvent) && !found:
+		// 初始化node
 		newNode := &node{
 			identity: objectReference{
 				OwnerReference: metav1.OwnerReference{
@@ -566,6 +589,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 			deletingDependents: beingDeleted(accessor) && hasDeleteDependentsFinalizer(accessor),
 			beingDeleted:       beingDeleted(accessor),
 		}
+		// 添加到uidToNode
 		gb.insertNode(newNode)
 		// the underlying delta_fifo may combine a creation and a deletion into
 		// one event, so we need to further process the event.

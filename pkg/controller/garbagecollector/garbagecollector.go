@@ -59,7 +59,8 @@ const ResourceResyncTime time.Duration = 0
 // ensures that the garbage collector operates with a graph that is at least as
 // up to date as the notification is sent.
 type GarbageCollector struct {
-	restMapper     resettableRESTMapper
+	restMapper resettableRESTMapper
+	// 用来访问 apiserver 的client 主要对metadata进行操作
 	metadataClient metadata.Interface
 	// garbage collector attempts to delete the items in attemptToDelete queue when the time is ripe.
 	attemptToDelete workqueue.RateLimitingInterface
@@ -80,9 +81,11 @@ func NewGarbageCollector(
 	sharedInformers controller.InformerFactory,
 	informersStarted <-chan struct{},
 ) (*GarbageCollector, error) {
+	// 初始化队列
 	attemptToDelete := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "garbage_collector_attempt_to_delete")
 	attemptToOrphan := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "garbage_collector_attempt_to_orphan")
 	absentOwnerCache := NewUIDCache(500)
+	// 初始化GC对象
 	gc := &GarbageCollector{
 		metadataClient:   metadataClient,
 		restMapper:       mapper,
@@ -90,6 +93,7 @@ func NewGarbageCollector(
 		attemptToOrphan:  attemptToOrphan,
 		absentOwnerCache: absentOwnerCache,
 	}
+	// 初始化GraphBuilder GraphBuilder 会用infomers来监听所有事件的变动 并把这些事件转换为event对象加入队列中 并对事件进行分类 添加到不同到队列里
 	gc.dependencyGraphBuilder = &GraphBuilder{
 		metadataClient:   metadataClient,
 		informersStarted: informersStarted,
@@ -102,6 +106,7 @@ func NewGarbageCollector(
 		attemptToOrphan:  attemptToOrphan,
 		absentOwnerCache: absentOwnerCache,
 		sharedInformers:  sharedInformers,
+		// 忽略的资源
 		ignoredResources: ignoredResources,
 	}
 
@@ -111,9 +116,11 @@ func NewGarbageCollector(
 // resyncMonitors starts or stops resource monitors as needed to ensure that all
 // (and only) those resources present in the map are monitored.
 func (gc *GarbageCollector) resyncMonitors(deletableResources map[schema.GroupVersionResource]struct{}) error {
+	// 同步资源 根据每个资源初始化对应的infomer 每个资源都被称为monitors
 	if err := gc.dependencyGraphBuilder.syncMonitors(deletableResources); err != nil {
 		return err
 	}
+	// 启动监控所有资源的infomers
 	gc.dependencyGraphBuilder.startMonitors()
 	return nil
 }
@@ -127,9 +134,9 @@ func (gc *GarbageCollector) Run(workers int, stopCh <-chan struct{}) {
 
 	klog.Infof("Starting garbage collector controller")
 	defer klog.Infof("Shutting down garbage collector controller")
-
+	// 运行GraphBuilder
 	go gc.dependencyGraphBuilder.Run(stopCh)
-
+	// 判断缓存是否同步成功
 	if !cache.WaitForNamedCacheSync("garbage collector", stopCh, gc.dependencyGraphBuilder.IsSynced) {
 		return
 	}
@@ -137,6 +144,7 @@ func (gc *GarbageCollector) Run(workers int, stopCh <-chan struct{}) {
 	klog.Infof("Garbage collector: all resource monitors have synced. Proceeding to collect garbage")
 
 	// gc workers
+	// 启动 workers
 	for i := 0; i < workers; i++ {
 		go wait.Until(gc.runAttemptToDeleteWorker, 1*time.Second, stopCh)
 		go wait.Until(gc.runAttemptToOrphanWorker, 1*time.Second, stopCh)
@@ -163,6 +171,7 @@ func (gc *GarbageCollector) Sync(discoveryClient discovery.ServerResourcesInterf
 	oldResources := make(map[schema.GroupVersionResource]struct{})
 	wait.Until(func() {
 		// Get the current resource list from discovery.
+		// 获取资源列表
 		newResources := GetDeletableResources(discoveryClient)
 
 		// This can occur if there is an internal error in GetDeletableResources.
@@ -172,6 +181,7 @@ func (gc *GarbageCollector) Sync(discoveryClient discovery.ServerResourcesInterf
 		}
 
 		// Decide whether discovery has reported a change.
+		// 判断是否有变动
 		if reflect.DeepEqual(oldResources, newResources) {
 			klog.V(5).Infof("no resource updates from discovery, skipping garbage collector sync")
 			return
@@ -213,6 +223,7 @@ func (gc *GarbageCollector) Sync(discoveryClient discovery.ServerResourcesInterf
 			// discovery call if the resources appeared in-between the calls. In that
 			// case, the restMapper will fail to map some of newResources until the next
 			// attempt.
+			// 重新同步
 			if err := gc.resyncMonitors(newResources); err != nil {
 				utilruntime.HandleError(fmt.Errorf("failed to sync resource monitors (attempt %d): %v", attempt, err))
 				return false, nil
@@ -282,18 +293,22 @@ func (gc *GarbageCollector) runAttemptToDeleteWorker() {
 }
 
 func (gc *GarbageCollector) attemptToDeleteWorker() bool {
+	// 从队列里获取obj
 	item, quit := gc.attemptToDelete.Get()
 	gc.workerLock.RLock()
 	defer gc.workerLock.RUnlock()
 	if quit {
 		return false
 	}
+	// 用完需要告知队列
 	defer gc.attemptToDelete.Done(item)
+	// 转化为node对象
 	n, ok := item.(*node)
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("expect *node, got %#v", item))
 		return true
 	}
+	// 进行删除操作
 	err := gc.attemptToDeleteItem(n)
 	if err != nil {
 		if _, ok := err.(*restMappingError); ok {
@@ -309,12 +324,14 @@ func (gc *GarbageCollector) attemptToDeleteWorker() bool {
 			utilruntime.HandleError(fmt.Errorf("error syncing item %s: %v", n, err))
 		}
 		// retry if garbage collection of an object failed.
+		// 重新放入队列中 等待下次重试
 		gc.attemptToDelete.AddRateLimited(item)
 	} else if !n.isObserved() {
 		// requeue if item hasn't been observed via an informer event yet.
 		// otherwise a virtual node for an item added AND removed during watch reestablishment can get stuck in the graph and never removed.
 		// see https://issue.k8s.io/56121
 		klog.V(5).Infof("item %s hasn't been observed via informer yet", n.identity)
+		// 重新放入队列中 等待下次重试
 		gc.attemptToDelete.AddRateLimited(item)
 	}
 	return true
@@ -405,6 +422,7 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 		"objectUID", item.identity.UID, "kind", item.identity.Kind)
 
 	// "being deleted" is an one-way trip to the final deletion. We'll just wait for the final deletion, and then process the object's dependents.
+	// 判断该 node 是否处于删除中
 	if item.isBeingDeleted() && !item.isDeletingDependents() {
 		klog.V(5).Infof("processing item %s returned at once, because its DeletionTimestamp is non-nil", item.identity)
 		return nil
@@ -412,13 +430,16 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 	// TODO: It's only necessary to talk to the API server if this is a
 	// "virtual" node. The local graph could lag behind the real status, but in
 	// practice, the difference is small.
+	// 使用client 访问api server 获取该node的最新状态
 	latest, err := gc.getObject(item.identity)
 	switch {
 	case errors.IsNotFound(err):
+		// 如果api server不存在此node 那么此node 为virtual node
 		// the GraphBuilder can add "virtual" node for an owner that doesn't
 		// exist yet, so we need to enqueue a virtual Delete event to remove
 		// the virtual node from GraphBuilder.uidToNode.
 		klog.V(5).Infof("item %v not found, generating a virtual delete event", item.identity)
+		// 重新添加到graphChanges队列 等待下次删除
 		gc.dependencyGraphBuilder.enqueueVirtualDeleteEvent(item.identity)
 		// since we're manually inserting a delete event to remove this node,
 		// we don't need to keep tracking it as a virtual node and requeueing in attemptToDelete
@@ -427,9 +448,10 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 	case err != nil:
 		return err
 	}
-
+	// 判断最新的UID 和缓存中的UID是否一致
 	if latest.GetUID() != item.identity.UID {
 		klog.V(5).Infof("UID doesn't match, item %v not found, generating a virtual delete event", item.identity)
+		// 重新添加到graphChanges队列 等待下次删除
 		gc.dependencyGraphBuilder.enqueueVirtualDeleteEvent(item.identity)
 		// since we're manually inserting a delete event to remove this node,
 		// we don't need to keep tracking it as a virtual node and requeueing in attemptToDelete
@@ -439,6 +461,7 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 
 	// TODO: attemptToOrphanWorker() routine is similar. Consider merging
 	// attemptToOrphanWorker() into attemptToDeleteItem() as well.
+	// 判断该node.deletingDependents处于
 	if item.isDeletingDependents() {
 		return gc.processDeletingDependentsItem(item)
 	}
@@ -591,6 +614,7 @@ func (gc *GarbageCollector) attemptToOrphanWorker() bool {
 		return false
 	}
 	defer gc.attemptToOrphan.Done(item)
+	// 转换为node对象
 	owner, ok := item.(*node)
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("expect *node, got %#v", item))
@@ -636,6 +660,7 @@ func (gc *GarbageCollector) GraphHasUID(u types.UID) bool {
 // GetDeletableResources will log and return any discovered resources it was
 // able to process (which may be none).
 func GetDeletableResources(discoveryClient discovery.ServerResourcesInterface) map[schema.GroupVersionResource]struct{} {
+	// 获取可删除的资源 通过discovery 获取所有资源
 	preferredResources, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
 		if discovery.IsGroupDiscoveryFailedError(err) {

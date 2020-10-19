@@ -512,22 +512,25 @@ func startTTLController(ctx ControllerContext) (http.Handler, bool, error) {
 }
 
 func startGarbageCollectorController(ctx ControllerContext) (http.Handler, bool, error) {
+	// 判断是否开启GC
 	if !ctx.ComponentConfig.GarbageCollectorController.EnableGarbageCollector {
 		return nil, false, nil
 	}
-
+	// 初始化client
 	gcClientset := ctx.ClientBuilder.ClientOrDie("generic-garbage-collector")
 
 	config := ctx.ClientBuilder.ConfigOrDie("generic-garbage-collector")
+	// 初始化client
 	metadataClient, err := metadata.NewForConfig(config)
 	if err != nil {
 		return nil, true, err
 	}
-
+	// 忽略的资源 这些资源将不进行GC
 	ignoredResources := make(map[schema.GroupResource]struct{})
 	for _, r := range ctx.ComponentConfig.GarbageCollectorController.GCIgnoredResources {
 		ignoredResources[schema.GroupResource{Group: r.Group, Resource: r.Resource}] = struct{}{}
 	}
+	// 初始化garbageCollector
 	garbageCollector, err := garbagecollector.NewGarbageCollector(
 		metadataClient,
 		ctx.RESTMapper,
@@ -540,13 +543,15 @@ func startGarbageCollectorController(ctx ControllerContext) (http.Handler, bool,
 	}
 
 	// Start the garbage collector.
+	// 启动 GC
 	workers := int(ctx.ComponentConfig.GarbageCollectorController.ConcurrentGCSyncs)
 	go garbageCollector.Run(workers, ctx.Stop)
 
 	// Periodically refresh the RESTMapper with new discovery information and sync
 	// the garbage collector.
+	// 监听及同步可删除的资源
 	go garbageCollector.Sync(gcClientset.Discovery(), 30*time.Second, ctx.Stop)
-
+	// 注册到debug接口里
 	return garbagecollector.NewDebugHandler(garbageCollector), true, nil
 }
 
