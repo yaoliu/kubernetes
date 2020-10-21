@@ -262,11 +262,16 @@ func (n *nodeEvictionMap) getStatus(nodeName string) (evictionStatus, bool) {
 
 // Controller is the controller that manages node's life cycle.
 type Controller struct {
+	// 用于驱逐node上的Pod 完成pod驱逐任务
+	// 运行在node上的pod 如果没有配置容忍(NoExecute) 那么如果这个node设置了污点(taint) 那么这个Pod会被驱逐
+	// 如果未开启taintManager 已经运行的Pod不会被驱逐 新创建的Pod如果配置了容忍 才能调度到这个node上
 	taintManager *scheduler.NoExecuteTaintManager
-
-	podLister         corelisters.PodLister
+	// 用于获取pod元数据
+	podLister corelisters.PodLister
+	// 用于判断pod是否同步过到cache
 	podInformerSynced cache.InformerSynced
-	kubeClient        clientset.Interface
+	// 用于访问apiserver的client
+	kubeClient clientset.Interface
 
 	// This timestamp is to be used instead of LastProbeTime stored in Condition. We do this
 	// to avoid the problem with time skew across the cluster.
@@ -274,7 +279,8 @@ type Controller struct {
 
 	enterPartialDisruptionFunc func(nodeNum int) float32
 	enterFullDisruptionFunc    func(nodeNum int) float32
-	computeZoneStateFunc       func(nodeConditions []*v1.NodeCondition) (int, ZoneState)
+	// 计算 zone 的状态
+	computeZoneStateFunc func(nodeConditions []*v1.NodeCondition) (int, ZoneState)
 
 	knownNodeSet map[string]*v1.Node
 	// per Node map storing last observed health together with a local time when it was observed.
@@ -290,9 +296,9 @@ type Controller struct {
 	zoneNoExecuteTainter map[string]*scheduler.RateLimitedTimedQueue
 
 	nodesToRetry sync.Map
-
+	// 将node
 	zoneStates map[string]ZoneState
-
+	// 用于获取daemonSet元数据
 	daemonSetStore          appsv1listers.DaemonSetLister
 	daemonSetInformerSynced cache.InformerSynced
 
@@ -372,12 +378,14 @@ func NewNodeLifecycleController(
 	if kubeClient == nil {
 		klog.Fatalf("kubeClient is nil when starting Controller")
 	}
-
+	// 创建事件管理器
 	eventBroadcaster := record.NewBroadcaster()
+	// 创建事件收集器
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "node-controller"})
+	// 设置事件上报到klog
 	eventBroadcaster.StartStructuredLogging(0)
-
 	klog.Infof("Sending events to api server.")
+	// 设置事件上报到Api Server
 	eventBroadcaster.StartRecordingToSink(
 		&v1core.EventSinkImpl{
 			Interface: v1core.New(kubeClient.CoreV1().RESTClient()).Events(""),
@@ -415,6 +423,8 @@ func NewNodeLifecycleController(
 	nc.enterFullDisruptionFunc = nc.HealthyQPSFunc
 	nc.computeZoneStateFunc = nc.ComputeZoneState
 
+	// 监听watch pod add/update/delete等事件 并且调用对应事件注册的函数
+	// 如果开启了TaintManager Pod也要添加到对应的TaintManager.podUpdateQueue队列里
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*v1.Pod)
@@ -427,6 +437,7 @@ func NewNodeLifecycleController(
 			prevPod := prev.(*v1.Pod)
 			newPod := obj.(*v1.Pod)
 			nc.podUpdated(prevPod, newPod)
+			//
 			if nc.taintManager != nil {
 				nc.taintManager.PodUpdated(prevPod, newPod)
 			}
@@ -467,6 +478,7 @@ func NewNodeLifecycleController(
 	})
 
 	podIndexer := podInformer.Informer().GetIndexer()
+	// 根据nodename 来获取所有在这个node上的pod
 	nc.getPodsAssignedToNode = func(nodeName string) ([]*v1.Pod, error) {
 		objs, err := podIndexer.ByIndex(nodeNameKeyIndex, nodeName)
 		if err != nil {
@@ -483,12 +495,14 @@ func NewNodeLifecycleController(
 		return pods, nil
 	}
 	nc.podLister = podInformer.Lister()
-
+	// 如果开启了TaintManager
 	if nc.runTaintManager {
 		podGetter := func(name, namespace string) (*v1.Pod, error) { return nc.podLister.Pods(namespace).Get(name) }
 		nodeLister := nodeInformer.Lister()
 		nodeGetter := func(name string) (*v1.Node, error) { return nodeLister.Get(name) }
+		// 初始化taintManager
 		nc.taintManager = scheduler.NewNoExecuteTaintManager(kubeClient, podGetter, nodeGetter, nc.getPodsAssignedToNode)
+		// 监听watch node add/update/delete等事件 并且注册TaintManager的相关函数
 		nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: nodeutil.CreateAddNodeHandler(func(node *v1.Node) error {
 				nc.taintManager.NodeUpdated(nil, node)
@@ -506,6 +520,7 @@ func NewNodeLifecycleController(
 	}
 
 	klog.Infof("Controller will reconcile labels.")
+	// 监听watch node add/update/delete等事件 并且注册对应事件所需要的函数
 	nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: nodeutil.CreateAddNodeHandler(func(node *v1.Node) error {
 			nc.nodeUpdateQueue.Add(node.Name)
@@ -522,13 +537,13 @@ func NewNodeLifecycleController(
 			return nil
 		}),
 	})
-
+	// 用于获取lease元数据
 	nc.leaseLister = leaseInformer.Lister()
 	nc.leaseInformerSynced = leaseInformer.Informer().HasSynced
-
+	// 用于获取node元数据
 	nc.nodeLister = nodeInformer.Lister()
 	nc.nodeInformerSynced = nodeInformer.Informer().HasSynced
-
+	// 用于获取daemonset元数据
 	nc.daemonSetStore = daemonSetInformer.Lister()
 	nc.daemonSetInformerSynced = daemonSetInformer.Informer().HasSynced
 
@@ -541,11 +556,11 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 
 	klog.Infof("Starting node controller")
 	defer klog.Infof("Shutting down node controller")
-
+	// 等待lease,node,pod,daemonset 的缓存同步完成
 	if !cache.WaitForNamedCacheSync("taint", stopCh, nc.leaseInformerSynced, nc.nodeInformerSynced, nc.podInformerSynced, nc.daemonSetInformerSynced) {
 		return
 	}
-
+	// 运行TaintManager
 	if nc.runTaintManager {
 		go nc.taintManager.Run(stopCh)
 	}
@@ -555,6 +570,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 	defer nc.podUpdateQueue.ShutDown()
 
 	// Start workers to reconcile labels and/or update NoSchedule taint for nodes.
+	// 启动多个goroutine 来运行doNodeProcessingPassWorker 处理nodeUpdateQueue队列中的数据
 	for i := 0; i < scheduler.UpdateWorkerSize; i++ {
 		// Thanks to "workqueue", each worker just need to get item from queue, because
 		// the item is flagged when got from queue: if new event come, the new item will
@@ -562,7 +578,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 		// no event missed.
 		go wait.Until(nc.doNodeProcessingPassWorker, time.Second, stopCh)
 	}
-
+	// 启动多个goroutine 来运行doPodProcessingWorker 处理podUpdateQueue队列中的数据
 	for i := 0; i < podUpdateWorkerSize; i++ {
 		go wait.Until(nc.doPodProcessingWorker, time.Second, stopCh)
 	}
@@ -570,15 +586,18 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 	if nc.runTaintManager {
 		// Handling taint based evictions. Because we don't want a dedicated logic in TaintManager for NC-originated
 		// taints and we normally don't rate limit evictions caused by taints, we need to rate limit adding taints.
+		// 如果开启TaintManager 则运行doNoExecuteTaintingPass
 		go wait.Until(nc.doNoExecuteTaintingPass, scheduler.NodeEvictionPeriod, stopCh)
 	} else {
 		// Managing eviction of nodes:
 		// When we delete pods off a node, if the node was not empty at the time we then
 		// queue an eviction watcher. If we hit an error, retry deletion.
+		// 如果没有开启TaintManager 则运行doEvictionPass
 		go wait.Until(nc.doEvictionPass, scheduler.NodeEvictionPeriod, stopCh)
 	}
 
 	// Incorporate the results of node health signal pushed from kubelet to master.
+	// 运行monitorNodeHealth周期性监控node状态
 	go wait.Until(func() {
 		if err := nc.monitorNodeHealth(); err != nil {
 			klog.Errorf("Error monitoring node health: %v", err)

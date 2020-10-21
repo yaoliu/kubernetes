@@ -192,26 +192,40 @@ func startNodeIpamController(ctx ControllerContext) (http.Handler, bool, error) 
 }
 
 func startNodeLifecycleController(ctx ControllerContext) (http.Handler, bool, error) {
+	// NodeLifecycleController 用于管理每个Node的生命周期 监控每个Node的状态
 	lifecycleController, err := lifecyclecontroller.NewNodeLifecycleController(
 		ctx.InformerFactory.Coordination().V1().Leases(),
+		// 监听pod 资源
 		ctx.InformerFactory.Core().V1().Pods(),
+		// 监听node 资源
 		ctx.InformerFactory.Core().V1().Nodes(),
+		// 监听daemonset 资源
 		ctx.InformerFactory.Apps().V1().DaemonSets(),
 		// node lifecycle controller uses existing cluster role from node-controller
 		ctx.ClientBuilder.ClientOrDie("node-controller"),
+		// 默认5s 表示同步NodeStatus的周期
 		ctx.ComponentConfig.KubeCloudShared.NodeMonitorPeriod.Duration,
+		// 默认60s 表示Node启动完成之前 标记为unhealthy的节点允许无响应的时间
 		ctx.ComponentConfig.NodeLifecycleController.NodeStartupGracePeriod.Duration,
+		// 默认40s 表示在标记某个node为unhealthy前 允许40s内该node无响应
 		ctx.ComponentConfig.NodeLifecycleController.NodeMonitorGracePeriod.Duration,
+		// 默认5分钟 表示强制删除Pod时 容忍Pod时间
 		ctx.ComponentConfig.NodeLifecycleController.PodEvictionTimeout.Duration,
+		// 默认0.1 表示当集群下某个zone为unhealthy时 每秒应该剔除的Node数量 默认每10秒剔除一个node
 		ctx.ComponentConfig.NodeLifecycleController.NodeEvictionRate,
+		// 节点驱逐速率
 		ctx.ComponentConfig.NodeLifecycleController.SecondaryNodeEvictionRate,
+		// 默认50 当该Zone的节点数超过该阀值 认为这个zone为一个大集群
 		ctx.ComponentConfig.NodeLifecycleController.LargeClusterSizeThreshold,
+		// 默认0.55 表示为不健康zone的驱赶速率阀值 如果默认为0.55 表示该zone中的节点宕机数目超过55% 则认为该zone不健康
 		ctx.ComponentConfig.NodeLifecycleController.UnhealthyZoneThreshold,
+		// 默契开启  开启TaintManager 用来驱逐Pod
 		ctx.ComponentConfig.NodeLifecycleController.EnableTaintManager,
 	)
 	if err != nil {
 		return nil, true, err
 	}
+	// 启动
 	go lifecycleController.Run(ctx.Stop)
 	return nil, true, nil
 }

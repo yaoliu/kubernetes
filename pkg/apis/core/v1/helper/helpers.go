@@ -479,9 +479,12 @@ func GetMatchingTolerations(taints []v1.Taint, tolerations []v1.Toleration) (boo
 		return false, []v1.Toleration{}
 	}
 	result := []v1.Toleration{}
+	// 遍历所有污点
 	for i := range taints {
 		tolerated := false
+		// 遍历所有容忍
 		for j := range tolerations {
+			// 判断是否能够匹配
 			if tolerations[j].ToleratesTaint(&taints[i]) {
 				result = append(result, tolerations[j])
 				tolerated = true
