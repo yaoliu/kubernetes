@@ -80,26 +80,27 @@ type GetPodsByNodeNameFunc func(nodeName string) ([]*v1.Pod, error)
 
 // NoExecuteTaintManager listens to Taint/Toleration changes and is responsible for removing Pods
 // from Nodes tainted with NoExecute Taints.
-// 用于管理每个node上的Pod是否应该根据容忍/污点来进行是否对Pod的驱逐
+// 用于管理每个node是否应该根据容忍或者污点来对Pod的进行驱逐
 type NoExecuteTaintManager struct {
 	// 用于访问apiserver的client
 	client clientset.Interface
 	// 事件上报
 	recorder record.EventRecorder
-	// 用来获取pod对象
+	// 用于获取pod对象
 	getPod GetPodFunc
-	// 用来获取node对象
+	// 用于获取node对象
 	getNode GetNodeFunc
-	// 用来根据nodename来获取所有在这个node上的所有Pod
+	// 用于根据nodename来获取所有在这个node上的所有Pod
 	getPodsAssignedToNode GetPodsByNodeNameFunc
 	// 工作队列
 	taintEvictionQueue *TimedWorkerQueue
 	// keeps a map from nodeName to all noExecute taints on that Node
 	taintedNodesLock sync.Mutex
 	taintedNodes     map[string][]v1.Taint
-
+	// 用来存储Node对象  以数组的方式 来提高并行处理速度
 	nodeUpdateChannels []chan nodeUpdateItem
-	podUpdateChannels  []chan podUpdateItem
+	// 用来存储Node对象  以数组的方式 来提高并行处理速度
+	podUpdateChannels []chan podUpdateItem
 
 	nodeUpdateQueue workqueue.Interface
 	podUpdateQueue  workqueue.Interface
@@ -174,7 +175,7 @@ func NewNoExecuteTaintManager(c clientset.Interface, getPod GetPodFunc, getNode 
 	} else {
 		klog.Fatalf("kubeClient is nil when starting NodeController")
 	}
-
+	// 初始化NoExecuteTaintManager
 	tm := &NoExecuteTaintManager{
 		client:                c,
 		recorder:              recorder,
@@ -247,6 +248,7 @@ func (tc *NoExecuteTaintManager) Run(stopCh <-chan struct{}) {
 		}
 	}(stopCh)
 
+	// 开启UpdateWorkerSize个goroutine 并行处理任务
 	wg := sync.WaitGroup{}
 	wg.Add(UpdateWorkerSize)
 	for i := 0; i < UpdateWorkerSize; i++ {
@@ -492,7 +494,7 @@ func (tc *NoExecuteTaintManager) handleNodeUpdate(nodeUpdate nodeUpdateItem) {
 		}
 		return
 	}
-
+	// 对所有node上对pod进行processPodOnNode操作
 	now := time.Now()
 	for _, pod := range pods {
 		podNamespacedName := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}

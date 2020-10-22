@@ -64,6 +64,7 @@ import (
 
 func init() {
 	// Register prometheus metrics
+	// 注册上报metrics
 	Register()
 }
 
@@ -76,6 +77,7 @@ var (
 
 	// NotReadyTaintTemplate is the taint for when a node is not ready for
 	// executing pods
+	// 未就绪状态污点模版
 	NotReadyTaintTemplate = &v1.Taint{
 		Key:    v1.TaintNodeNotReady,
 		Effect: v1.TaintEffectNoExecute,
@@ -85,6 +87,7 @@ var (
 	// represents which NodeConditionType under which ConditionStatus should be
 	// tainted with which TaintKey
 	// for certain NodeConditionType, there are multiple {ConditionStatus,TaintKey} pairs
+	// 根据node.condition.Type和status 来确定添加那个污点
 	nodeConditionToTaintKeyStatusMap = map[v1.NodeConditionType]map[v1.ConditionStatus]string{
 		v1.NodeReady: {
 			v1.ConditionFalse:   v1.TaintNodeNotReady,
@@ -118,6 +121,7 @@ var (
 type ZoneState string
 
 const (
+	// Zone种类
 	stateInitial           = ZoneState("Initial")
 	stateNormal            = ZoneState("Normal")
 	stateFullDisruption    = ZoneState("FullDisruption")
@@ -296,7 +300,7 @@ type Controller struct {
 	zoneNoExecuteTainter map[string]*scheduler.RateLimitedTimedQueue
 
 	nodesToRetry sync.Map
-	// 将node
+	// 将node划分到不同种类到Zone里
 	zoneStates map[string]ZoneState
 	// 用于获取daemonSet元数据
 	daemonSetStore          appsv1listers.DaemonSetLister
@@ -608,6 +612,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 }
 
 func (nc *Controller) doNodeProcessingPassWorker() {
+	// 此函数的功能主要是不断的从nodeUpdateQueue队列中取出数据 为每个对象完成NoSchedule的污点更新及Label的更新
 	for {
 		obj, shutdown := nc.nodeUpdateQueue.Get()
 		// "nodeUpdateQueue" will be shutdown when "stopCh" closed;
@@ -616,6 +621,7 @@ func (nc *Controller) doNodeProcessingPassWorker() {
 			return
 		}
 		nodeName := obj.(string)
+		// 完成每个node的NoSchedule更新
 		if err := nc.doNoScheduleTaintingPass(nodeName); err != nil {
 			klog.Errorf("Failed to taint NoSchedule on node <%s>, requeue it: %v", nodeName, err)
 			// TODO(k82cn): Add nodeName back to the queue
@@ -631,6 +637,7 @@ func (nc *Controller) doNodeProcessingPassWorker() {
 }
 
 func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
+	// 获取node对象
 	node, err := nc.nodeLister.Get(nodeName)
 	if err != nil {
 		// If node not found, just ignore it.
@@ -642,7 +649,10 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 
 	// Map node's condition to Taints.
 	var taints []v1.Taint
+	// 遍历node.status.Conditions
 	for _, condition := range node.Status.Conditions {
+		// 判断Conditions.Type是否在nodeConditionToTaintKeyStatusMap里 如果在 需要添加对应的污点
+		// 根据Conditions来创建对应的污点
 		if taintMap, found := nodeConditionToTaintKeyStatusMap[condition.Type]; found {
 			if taintKey, found := taintMap[condition.Status]; found {
 				taints = append(taints, v1.Taint{
@@ -652,6 +662,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 			}
 		}
 	}
+	// 如果处于Unschedulable状态 也添加对应的污点
 	if node.Spec.Unschedulable {
 		// If unschedulable, append related taint.
 		taints = append(taints, v1.Taint{
@@ -661,6 +672,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 	}
 
 	// Get exist taints of node.
+	// 获取当前node已经存在的taints
 	nodeTaints := taintutils.TaintSetFilter(node.Spec.Taints, func(t *v1.Taint) bool {
 		// only NoSchedule taints are candidates to be compared with "taints" later
 		if t.Effect != v1.TaintEffectNoSchedule {
@@ -674,11 +686,13 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 		_, found := taintKeyToNodeConditionMap[t.Key]
 		return found
 	})
+	// 对比当前和新的 得到需要添加及需要删除的
 	taintsToAdd, taintsToDel := taintutils.TaintSetDiff(taints, nodeTaints)
 	// If nothing to add not delete, return true directly.
 	if len(taintsToAdd) == 0 && len(taintsToDel) == 0 {
 		return nil
 	}
+	// 更新当前node taints
 	if !nodeutil.SwapNodeControllerTaint(nc.kubeClient, taintsToAdd, taintsToDel, node) {
 		return fmt.Errorf("failed to swap taints of node %+v", node)
 	}
@@ -776,22 +790,33 @@ func (nc *Controller) doEvictionPass() {
 // if not, post "NodeReady==ConditionUnknown".
 // This function will taint nodes who are not ready or not reachable for a long period of time.
 func (nc *Controller) monitorNodeHealth() error {
+	// 监控node运行状态
+	// 对异常的node进行处理
 	// We are listing nodes from local cache as we can tolerate some small delays
 	// comparing to state from etcd and there is eventual consistency anyway.
+	// 获取所有node对象
 	nodes, err := nc.nodeLister.List(labels.Everything())
 	if err != nil {
 		return err
 	}
+	// 将所有node进行分类
+	// added = 需要新增的node
+	// deleted = 需要删除的node
+	// newZoneRepresentatives = 需要进行分类到不同zone里到node
 	added, deleted, newZoneRepresentatives := nc.classifyNodes(nodes)
 
+	// 遍历所有需要分类到不同zone里到node
 	for i := range newZoneRepresentatives {
+		// 进行分类 将node划分到zone里
 		nc.addPodEvictorForNewZone(newZoneRepresentatives[i])
 	}
 
 	for i := range added {
 		klog.V(1).Infof("Controller observed a new Node: %#v", added[i].Name)
 		nodeutil.RecordNodeEvent(nc.recorder, added[i].Name, string(added[i].UID), v1.EventTypeNormal, "RegisteredNode", fmt.Sprintf("Registered Node %v in Controller", added[i].Name))
+		// 添加到knownNodeSet
 		nc.knownNodeSet[added[i].Name] = added[i]
+		// 进行分类 将node划分到zone里
 		nc.addPodEvictorForNewZone(added[i])
 		if nc.runTaintManager {
 			nc.markNodeAsReachable(added[i])
@@ -1384,11 +1409,15 @@ func (nc *Controller) setLimiterInZone(zone string, zoneSize int, state ZoneStat
 //   2. deleted: the nodes that in 'knownNodeSet', but not in 'allNodes'
 //   3. newZoneRepresentatives: the nodes that in both 'knownNodeSet' and 'allNodes', but no zone states
 func (nc *Controller) classifyNodes(allNodes []*v1.Node) (added, deleted, newZoneRepresentatives []*v1.Node) {
+	// 遍历所有node
 	for i := range allNodes {
+		// 判断node如果不在knownNodeSet里 将其添加到added
 		if _, has := nc.knownNodeSet[allNodes[i].Name]; !has {
 			added = append(added, allNodes[i])
 		} else {
 			// Currently, we only consider new zone as updated.
+			// node如果在knownNodeSet里
+			// 判断node是否在zoneStates里 如果不在将其添加到newZoneRepresentatives
 			zone := utilnode.GetZoneKey(allNodes[i])
 			if _, found := nc.zoneStates[zone]; !found {
 				newZoneRepresentatives = append(newZoneRepresentatives, allNodes[i])
@@ -1398,6 +1427,7 @@ func (nc *Controller) classifyNodes(allNodes []*v1.Node) (added, deleted, newZon
 
 	// If there's a difference between lengths of known Nodes and observed nodes
 	// we must have removed some Node.
+	// 将多余的node添加到deleted
 	if len(nc.knownNodeSet)+len(added) != len(allNodes) {
 		knowSetCopy := map[string]*v1.Node{}
 		for k, v := range nc.knownNodeSet {
@@ -1434,12 +1464,16 @@ func (nc *Controller) addPodEvictorForNewZone(node *v1.Node) {
 	defer nc.evictorLock.Unlock()
 	zone := utilnode.GetZoneKey(node)
 	if _, found := nc.zoneStates[zone]; !found {
+		// 新增加的 node 默认的 zoneStates 为 Initial
 		nc.zoneStates[zone] = stateInitial
+		// 判断是否开启TaintManager 然后将node加入到zonePodEvictor/zoneNoExecuteTainter里
 		if !nc.runTaintManager {
+			// 将node加入到zonePodEvictor
 			nc.zonePodEvictor[zone] =
 				scheduler.NewRateLimitedTimedQueue(
 					flowcontrol.NewTokenBucketRateLimiter(nc.evictionLimiterQPS, scheduler.EvictionRateLimiterBurst))
 		} else {
+			// 将node加入到zoneNoExecuteTainter
 			nc.zoneNoExecuteTainter[zone] =
 				scheduler.NewRateLimitedTimedQueue(
 					flowcontrol.NewTokenBucketRateLimiter(nc.evictionLimiterQPS, scheduler.EvictionRateLimiterBurst))
