@@ -93,15 +93,19 @@ var (
 			v1.ConditionFalse:   v1.TaintNodeNotReady,
 			v1.ConditionUnknown: v1.TaintNodeUnreachable,
 		},
+		// 内存
 		v1.NodeMemoryPressure: {
 			v1.ConditionTrue: v1.TaintNodeMemoryPressure,
 		},
+		// 磁盘
 		v1.NodeDiskPressure: {
 			v1.ConditionTrue: v1.TaintNodeDiskPressure,
 		},
+		// 网络
 		v1.NodeNetworkUnavailable: {
 			v1.ConditionTrue: v1.TaintNodeNetworkUnavailable,
 		},
+		// PID
 		v1.NodePIDPressure: {
 			v1.ConditionTrue: v1.TaintNodePIDPressure,
 		},
@@ -280,14 +284,16 @@ type Controller struct {
 	// This timestamp is to be used instead of LastProbeTime stored in Condition. We do this
 	// to avoid the problem with time skew across the cluster.
 	now func() metav1.Time
-
+	// 计算PartialDisruption zone下node驱逐速率
 	enterPartialDisruptionFunc func(nodeNum int) float32
-	enterFullDisruptionFunc    func(nodeNum int) float32
-	// 计算 zone 的状态
+	// 计算FullDisruption zone下node驱逐速率
+	enterFullDisruptionFunc func(nodeNum int) float32
+	// 计算node所属zone及未就绪node数量
 	computeZoneStateFunc func(nodeConditions []*v1.NodeCondition) (int, ZoneState)
 
 	knownNodeSet map[string]*v1.Node
 	// per Node map storing last observed health together with a local time when it was observed.
+	// 记录node最近一次健康状态
 	nodeHealthMap *nodeHealthMap
 
 	// evictorLock protects zonePodEvictor and zoneNoExecuteTainter.
@@ -303,22 +309,25 @@ type Controller struct {
 	// 将node划分到不同种类到Zone里
 	zoneStates map[string]ZoneState
 	// 用于获取daemonSet元数据
-	daemonSetStore          appsv1listers.DaemonSetLister
+	daemonSetStore appsv1listers.DaemonSetLister
+	// 记录daemonset同步cache状态
 	daemonSetInformerSynced cache.InformerSynced
 
 	leaseLister         coordlisters.LeaseLister
 	leaseInformerSynced cache.InformerSynced
-	nodeLister          corelisters.NodeLister
-	nodeInformerSynced  cache.InformerSynced
-
+	// 用于获取node元数据
+	nodeLister         corelisters.NodeLister
+	nodeInformerSynced cache.InformerSynced
+	// 根据nodename获取
 	getPodsAssignedToNode func(nodeName string) ([]*v1.Pod, error)
-
+	// 事件记录器
 	recorder record.EventRecorder
 
 	// Value controlling Controller monitoring period, i.e. how often does Controller
 	// check node health signal posted from kubelet. This value should be lower than
 	// nodeMonitorGracePeriod.
 	// TODO: Change node health monitor to watch based.
+	// 初始化传进来的参数
 	nodeMonitorPeriod time.Duration
 
 	// When node is just created, e.g. cluster bootstrap or node creation, we give
@@ -398,7 +407,7 @@ func NewNodeLifecycleController(
 	if kubeClient.CoreV1().RESTClient().GetRateLimiter() != nil {
 		ratelimiter.RegisterMetricAndTrackRateLimiterUsage("node_lifecycle_controller", kubeClient.CoreV1().RESTClient().GetRateLimiter())
 	}
-
+	// 初始化controller
 	nc := &Controller{
 		kubeClient:                  kubeClient,
 		now:                         metav1.Now,
@@ -422,7 +431,7 @@ func NewNodeLifecycleController(
 		nodeUpdateQueue:             workqueue.NewNamed("node_lifecycle_controller"),
 		podUpdateQueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "node_lifecycle_controller_pods"),
 	}
-
+	// 和zone相关的方法
 	nc.enterPartialDisruptionFunc = nc.ReducedQPSFunc
 	nc.enterFullDisruptionFunc = nc.HealthyQPSFunc
 	nc.computeZoneStateFunc = nc.ComputeZoneState
@@ -499,7 +508,7 @@ func NewNodeLifecycleController(
 		return pods, nil
 	}
 	nc.podLister = podInformer.Lister()
-	// 如果开启了TaintManager
+	// 如果开启了TaintManager 则需要将TaintManager有关的函数注册到nodeInformer里
 	if nc.runTaintManager {
 		podGetter := func(name, namespace string) (*v1.Pod, error) { return nc.podLister.Pods(namespace).Get(name) }
 		nodeLister := nodeInformer.Lister()
@@ -564,7 +573,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync("taint", stopCh, nc.leaseInformerSynced, nc.nodeInformerSynced, nc.podInformerSynced, nc.daemonSetInformerSynced) {
 		return
 	}
-	// 运行TaintManager
+	// 运行TaintManager 完成Pod的驱逐任务
 	if nc.runTaintManager {
 		go nc.taintManager.Run(stopCh)
 	}
@@ -575,6 +584,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 
 	// Start workers to reconcile labels and/or update NoSchedule taint for nodes.
 	// 启动多个goroutine 来运行doNodeProcessingPassWorker 处理nodeUpdateQueue队列中的数据
+	// doNodeProcessingPassWorker为每个Node对象完成NoSchedule的污点更新及Label的更新
 	for i := 0; i < scheduler.UpdateWorkerSize; i++ {
 		// Thanks to "workqueue", each worker just need to get item from queue, because
 		// the item is flagged when got from queue: if new event come, the new item will
@@ -824,7 +834,7 @@ func (nc *Controller) monitorNodeHealth() error {
 			nc.cancelPodEviction(added[i])
 		}
 	}
-
+	// 遍历所有deleted 将其从knownNodeSet移除
 	for i := range deleted {
 		klog.V(1).Infof("Controller observed a Node deletion: %v", deleted[i].Name)
 		nodeutil.RecordNodeEvent(nc.recorder, deleted[i].Name, string(deleted[i].UID), v1.EventTypeNormal, "RemovingNode", fmt.Sprintf("Removing Node %v from Controller", deleted[i].Name))
@@ -832,12 +842,15 @@ func (nc *Controller) monitorNodeHealth() error {
 	}
 
 	zoneToNodeConditions := map[string][]*v1.NodeCondition{}
+	// 遍历所有node
 	for i := range nodes {
 		var gracePeriod time.Duration
 		var observedReadyCondition v1.NodeCondition
 		var currentReadyCondition *v1.NodeCondition
 		node := nodes[i].DeepCopy()
 		if err := wait.PollImmediate(retrySleepTime, retrySleepTime*scheduler.NodeHealthUpdateRetry, func() (bool, error) {
+			// currentReadyCondition当前就绪条件
+			// observedReadyCondition
 			gracePeriod, observedReadyCondition, currentReadyCondition, err = nc.tryUpdateNodeHealth(node)
 			if err == nil {
 				return true, nil
@@ -1030,6 +1043,7 @@ func legacyIsMasterNode(nodeName string) bool {
 // tryUpdateNodeHealth checks a given node's conditions and tries to update it. Returns grace period to
 // which given node is entitled, state of current and last observed Ready Condition, and an error if it occurred.
 func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.NodeCondition, *v1.NodeCondition, error) {
+	// 拷贝node对应的health数据
 	nodeHealth := nc.nodeHealthMap.getDeepCopy(node.Name)
 	defer func() {
 		nc.nodeHealthMap.set(node.Name, nodeHealth)
@@ -1037,18 +1051,23 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 
 	var gracePeriod time.Duration
 	var observedReadyCondition v1.NodeCondition
+	// 从当前node.status.Conditions获取NodeReady类型作为currentReadyCondition
 	_, currentReadyCondition := nodeutil.GetNodeCondition(&node.Status, v1.NodeReady)
 	if currentReadyCondition == nil {
 		// If ready condition is nil, then kubelet (or nodecontroller) never posted node status.
 		// A fake ready condition is created, where LastHeartbeatTime and LastTransitionTime is set
 		// to node.CreationTimestamp to avoid handle the corner case.
+		// 如果currentReadyCondition不存在 此时kubelet 或者 nodecontroller 应该是没有上报node的状态
+		// 此时为node fake(伪造) 一个ready condition status="Unknown" LastHeartbeatTime和LastTransitionTime 为node的创建时间 如下
 		observedReadyCondition = v1.NodeCondition{
 			Type:               v1.NodeReady,
 			Status:             v1.ConditionUnknown,
 			LastHeartbeatTime:  node.CreationTimestamp,
 			LastTransitionTime: node.CreationTimestamp,
 		}
+
 		gracePeriod = nc.nodeStartupGracePeriod
+		// 更新nodeHealth状态
 		if nodeHealth != nil {
 			nodeHealth.status = &node.Status
 		} else {
@@ -1060,6 +1079,7 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 		}
 	} else {
 		// If ready condition is not nil, make a copy of it, since we may modify it in place later.
+		// 如果currentReadyCondition存在 则observedReadyCondition = currentReadyCondition
 		observedReadyCondition = *currentReadyCondition
 		gracePeriod = nc.nodeMonitorGracePeriod
 	}
