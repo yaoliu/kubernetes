@@ -92,18 +92,19 @@ type NoExecuteTaintManager struct {
 	getNode GetNodeFunc
 	// 用于根据nodename来获取所有在这个node上的所有Pod
 	getPodsAssignedToNode GetPodsByNodeNameFunc
-	// 工作队列
+	// 污点驱逐队列
 	taintEvictionQueue *TimedWorkerQueue
 	// keeps a map from nodeName to all noExecute taints on that Node
 	taintedNodesLock sync.Mutex
 	taintedNodes     map[string][]v1.Taint
-	// 用来存储Node对象  以数组的方式 来提高并行处理速度
+	// 用来存储node对象  以channel数组的方式 来提高并行处理速度
 	nodeUpdateChannels []chan nodeUpdateItem
-	// 用来存储Node对象  以数组的方式 来提高并行处理速度
+	// 用来存储node对象  以channel数组的方式 来提高并行处理速度
 	podUpdateChannels []chan podUpdateItem
-
+	// node对象
 	nodeUpdateQueue workqueue.Interface
-	podUpdateQueue  workqueue.Interface
+	// pod对象
+	podUpdateQueue workqueue.Interface
 }
 
 func deletePodHandler(c clientset.Interface, emitEventFunc func(types.NamespacedName)) func(args *WorkArgs) error {
@@ -128,6 +129,7 @@ func deletePodHandler(c clientset.Interface, emitEventFunc func(types.Namespaced
 }
 
 func getNoExecuteTaints(taints []v1.Taint) []v1.Taint {
+	// 获取
 	result := []v1.Taint{}
 	for i := range taints {
 		if taints[i].Effect == v1.TaintEffectNoExecute {

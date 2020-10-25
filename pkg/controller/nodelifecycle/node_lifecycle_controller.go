@@ -87,7 +87,7 @@ var (
 	// represents which NodeConditionType under which ConditionStatus should be
 	// tainted with which TaintKey
 	// for certain NodeConditionType, there are multiple {ConditionStatus,TaintKey} pairs
-	// 根据node.condition.Type和status 来确定添加那个污点
+	// 根据node.condition.type和node.condition.status 来确定添加那个污点
 	nodeConditionToTaintKeyStatusMap = map[v1.NodeConditionType]map[v1.ConditionStatus]string{
 		v1.NodeReady: {
 			v1.ConditionFalse:   v1.TaintNodeNotReady,
@@ -168,11 +168,15 @@ var labelReconcileInfo = []struct {
 	},
 }
 
+// node心跳数据 由每个node(kubelet)进行上报
 type nodeHealthData struct {
+	// 探测时间
 	probeTimestamp           metav1.Time
 	readyTransitionTimestamp metav1.Time
-	status                   *v1.NodeStatus
-	lease                    *coordv1.Lease
+	// node状态
+	status *v1.NodeStatus
+	// 租约
+	lease *coordv1.Lease
 }
 
 func (n *nodeHealthData) deepCopy() *nodeHealthData {
@@ -187,6 +191,7 @@ func (n *nodeHealthData) deepCopy() *nodeHealthData {
 	}
 }
 
+// 线程安全map 用来存每个node的心跳数据
 type nodeHealthMap struct {
 	lock        sync.RWMutex
 	nodeHealths map[string]*nodeHealthData
@@ -293,7 +298,7 @@ type Controller struct {
 
 	knownNodeSet map[string]*v1.Node
 	// per Node map storing last observed health together with a local time when it was observed.
-	// 记录node最近一次健康状态
+	// 记录node最近一次健康数据
 	nodeHealthMap *nodeHealthMap
 
 	// evictorLock protects zonePodEvictor and zoneNoExecuteTainter.
@@ -584,7 +589,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 
 	// Start workers to reconcile labels and/or update NoSchedule taint for nodes.
 	// 启动多个goroutine 来运行doNodeProcessingPassWorker 处理nodeUpdateQueue队列中的数据
-	// doNodeProcessingPassWorker为每个Node对象完成NoSchedule的污点更新及Label的更新
+	// doNodeProcessingPassWorker为每个node对象完成NoSchedule的污点更新及Label的更新
 	for i := 0; i < scheduler.UpdateWorkerSize; i++ {
 		// Thanks to "workqueue", each worker just need to get item from queue, because
 		// the item is flagged when got from queue: if new event come, the new item will
@@ -851,11 +856,13 @@ func (nc *Controller) monitorNodeHealth() error {
 		if err := wait.PollImmediate(retrySleepTime, retrySleepTime*scheduler.NodeHealthUpdateRetry, func() (bool, error) {
 			// currentReadyCondition当前就绪条件
 			// observedReadyCondition
+			// gracePeriod
 			gracePeriod, observedReadyCondition, currentReadyCondition, err = nc.tryUpdateNodeHealth(node)
 			if err == nil {
 				return true, nil
 			}
 			name := node.Name
+			// 上面会进行更新node 所以这个地方需要重新获取下最新的数据
 			node, err = nc.kubeClient.CoreV1().Nodes().Get(context.TODO(), name, metav1.GetOptions{})
 			if err != nil {
 				klog.Errorf("Failed while getting a Node to retry updating node health. Probably Node %s was deleted.", name)
@@ -869,11 +876,13 @@ func (nc *Controller) monitorNodeHealth() error {
 		}
 
 		// Some nodes may be excluded from disruption checking
+		// 判断node是否被排除, 如果没有被排除 则加入到zoneToNodeConditions里
 		if !isNodeExcludedFromDisruptionChecks(node) {
 			zoneToNodeConditions[utilnode.GetZoneKey(node)] = append(zoneToNodeConditions[utilnode.GetZoneKey(node)], currentReadyCondition)
 		}
 
 		if currentReadyCondition != nil {
+			// 根据nodename获取所有相关到Pod
 			pods, err := nc.getPodsAssignedToNode(node.Name)
 			if err != nil {
 				utilruntime.HandleError(fmt.Errorf("unable to list pods of node %v: %v", node.Name, err))
@@ -885,6 +894,7 @@ func (nc *Controller) monitorNodeHealth() error {
 				}
 				continue
 			}
+			// 如果启动了驱逐任务
 			if nc.runTaintManager {
 				nc.processTaintBaseEviction(node, &observedReadyCondition)
 			} else {
@@ -1043,9 +1053,10 @@ func legacyIsMasterNode(nodeName string) bool {
 // tryUpdateNodeHealth checks a given node's conditions and tries to update it. Returns grace period to
 // which given node is entitled, state of current and last observed Ready Condition, and an error if it occurred.
 func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.NodeCondition, *v1.NodeCondition, error) {
-	// 拷贝node对应的health数据
+	// 获取node最近一次的health数据
 	nodeHealth := nc.nodeHealthMap.getDeepCopy(node.Name)
 	defer func() {
+		// 更新/设置node的health数据
 		nc.nodeHealthMap.set(node.Name, nodeHealth)
 	}()
 
@@ -1100,10 +1111,11 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 	var savedCondition *v1.NodeCondition
 	var savedLease *coordv1.Lease
 	if nodeHealth != nil {
+		// 从nodeHealth里获取node.status.condition.type = "Ready"
 		_, savedCondition = nodeutil.GetNodeCondition(nodeHealth.status, v1.NodeReady)
 		savedLease = nodeHealth.lease
 	}
-
+	// 根据savedCondition,currentReadyCondition来创建nodeHealth数据
 	if nodeHealth == nil {
 		klog.Warningf("Missing timestamp for Node %s. Assuming now as a timestamp.", node.Name)
 		nodeHealth = &nodeHealthData{
@@ -1151,12 +1163,14 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 	// Note: If kubelet never posted the node status, but continues renewing the
 	// heartbeat leases, the node controller will assume the node is healthy and
 	// take no action.
+	// 获取当前node的lease(租约)
 	observedLease, _ := nc.leaseLister.Leases(v1.NamespaceNodeLease).Get(node.Name)
+	// 判断 然后更新当前lease信息及探测时间
 	if observedLease != nil && (savedLease == nil || savedLease.Spec.RenewTime.Before(observedLease.Spec.RenewTime)) {
 		nodeHealth.lease = observedLease
 		nodeHealth.probeTimestamp = nc.now()
 	}
-
+	// 判断node是否已经超过gracePeriod没进行上报状态
 	if nc.now().After(nodeHealth.probeTimestamp.Add(gracePeriod)) {
 		// NodeReady condition or lease was last set longer ago than gracePeriod, so
 		// update it to Unknown (regardless of its current value) in the master.
@@ -1196,7 +1210,7 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 		}
 		// We need to update currentReadyCondition due to its value potentially changed.
 		_, currentReadyCondition = nodeutil.GetNodeCondition(&node.Status, v1.NodeReady)
-
+		// 更新node最新的状态及更新nodeHealth数据
 		if !apiequality.Semantic.DeepEqual(currentReadyCondition, &observedReadyCondition) {
 			if _, err := nc.kubeClient.CoreV1().Nodes().UpdateStatus(context.TODO(), node, metav1.UpdateOptions{}); err != nil {
 				klog.Errorf("Error updating node %s: %v", node.Name, err)
