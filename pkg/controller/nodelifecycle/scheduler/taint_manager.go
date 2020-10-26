@@ -96,14 +96,15 @@ type NoExecuteTaintManager struct {
 	taintEvictionQueue *TimedWorkerQueue
 	// keeps a map from nodeName to all noExecute taints on that Node
 	taintedNodesLock sync.Mutex
-	taintedNodes     map[string][]v1.Taint
+	// 用来存放node和taints对应关系
+	taintedNodes map[string][]v1.Taint
 	// 用来存储node对象  以channel数组的方式 来提高并行处理速度
 	nodeUpdateChannels []chan nodeUpdateItem
 	// 用来存储node对象  以channel数组的方式 来提高并行处理速度
 	podUpdateChannels []chan podUpdateItem
-	// node对象
+	// watch的node会放此队列
 	nodeUpdateQueue workqueue.Interface
-	// pod对象
+	// watch的pod会放此队列
 	podUpdateQueue workqueue.Interface
 }
 
@@ -198,7 +199,7 @@ func NewNoExecuteTaintManager(c clientset.Interface, getPod GetPodFunc, getNode 
 // Run starts NoExecuteTaintManager which will run in loop until `stopCh` is closed.
 func (tc *NoExecuteTaintManager) Run(stopCh <-chan struct{}) {
 	klog.V(0).Infof("Starting NoExecuteTaintManager")
-	// 创建容量为UpdateWorkerSize大小的channel数组 用于并行处理
+	// 创建容量为UpdateWorkerSize大小的channel数组 用于并行处理 可以同时使用UpdateWorkerSize个进行处理
 	for i := 0; i < UpdateWorkerSize; i++ {
 		tc.nodeUpdateChannels = append(tc.nodeUpdateChannels, make(chan nodeUpdateItem, NodeUpdateChannelSize))
 		tc.podUpdateChannels = append(tc.podUpdateChannels, make(chan podUpdateItem, podUpdateChannelSize))
@@ -365,7 +366,7 @@ func (tc *NoExecuteTaintManager) processPodOnNode(
 	taints []v1.Taint,
 	now time.Time,
 ) {
-	// 如果taints为空 取消所有驱逐Pod的操作
+	// 如果taints为空 取消驱逐Pod的操作
 	if len(taints) == 0 {
 		tc.cancelWorkWithEvent(podNamespacedName)
 	}
@@ -470,6 +471,7 @@ func (tc *NoExecuteTaintManager) handleNodeUpdate(nodeUpdate nodeUpdateItem) {
 		if len(taints) == 0 {
 			delete(tc.taintedNodes, node.Name)
 		} else {
+			// 加入到map里
 			tc.taintedNodes[node.Name] = taints
 		}
 	}()

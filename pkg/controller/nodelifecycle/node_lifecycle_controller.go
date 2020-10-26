@@ -125,11 +125,11 @@ var (
 type ZoneState string
 
 const (
-	// Zone种类
-	stateInitial           = ZoneState("Initial")
-	stateNormal            = ZoneState("Normal")
-	stateFullDisruption    = ZoneState("FullDisruption")
-	statePartialDisruption = ZoneState("PartialDisruption")
+	// Zone分类
+	stateInitial           = ZoneState("Initial")           // 刚完成初始化 加入集群
+	stateNormal            = ZoneState("Normal")            // 正常状态
+	stateFullDisruption    = ZoneState("FullDisruption")    //将处于notReady的加入该zone
+	statePartialDisruption = ZoneState("PartialDisruption") //该zone中部分node notReady，此时已经超过了unhealthyZoneThreshold设置的阈值
 )
 
 const (
@@ -170,7 +170,7 @@ var labelReconcileInfo = []struct {
 
 // node心跳数据 由每个node(kubelet)进行上报
 type nodeHealthData struct {
-	// 探测时间
+	// 上次心跳探测时间
 	probeTimestamp           metav1.Time
 	readyTransitionTimestamp metav1.Time
 	// node状态
@@ -298,7 +298,7 @@ type Controller struct {
 
 	knownNodeSet map[string]*v1.Node
 	// per Node map storing last observed health together with a local time when it was observed.
-	// 记录node最近一次健康数据
+	// 记录node最近一次健康数据(心跳信息)
 	nodeHealthMap *nodeHealthMap
 
 	// evictorLock protects zonePodEvictor and zoneNoExecuteTainter.
@@ -847,7 +847,7 @@ func (nc *Controller) monitorNodeHealth() error {
 	}
 
 	zoneToNodeConditions := map[string][]*v1.NodeCondition{}
-	// 遍历所有node
+	// 遍历所有node 检查每个node心跳状态
 	for i := range nodes {
 		var gracePeriod time.Duration
 		var observedReadyCondition v1.NodeCondition
