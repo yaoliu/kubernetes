@@ -425,6 +425,7 @@ func (kl *Kubelet) syncNodeStatus() {
 		// This will exit immediately if it doesn't need to do anything.
 		kl.registerWithAPIServer()
 	}
+	//
 	if err := kl.updateNodeStatus(); err != nil {
 		klog.Errorf("Unable to update node status: %v", err)
 	}
@@ -434,6 +435,7 @@ func (kl *Kubelet) syncNodeStatus() {
 // change or enough time passed from the last sync.
 func (kl *Kubelet) updateNodeStatus() error {
 	klog.V(5).Infof("Updating node status")
+	// 重试次数(nodeStatusUpdateRetry) 默认为5次
 	for i := 0; i < nodeStatusUpdateRetry; i++ {
 		if err := kl.tryUpdateNodeStatus(i); err != nil {
 			if i > 0 && kl.onRepeatedHeartbeatFailure != nil {
@@ -460,6 +462,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	if tryNumber == 0 {
 		util.FromApiserverCache(&opts)
 	}
+	// 获取node信息
 	node, err := kl.heartbeatClient.CoreV1().Nodes().Get(context.TODO(), string(kl.nodeName), opts)
 	if err != nil {
 		return fmt.Errorf("error getting node %q: %v", kl.nodeName, err)
@@ -480,7 +483,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 			klog.Errorf(err.Error())
 		}
 	}
-
+	// 设置node状态
 	kl.setNodeStatus(node)
 
 	now := kl.clock.Now()
@@ -508,10 +511,12 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	}
 
 	// Patch the current status on the API server
+	// 更新node信息到APIServer
 	updatedNode, _, err := nodeutil.PatchNodeStatus(kl.heartbeatClient.CoreV1(), types.NodeName(kl.nodeName), originalNode, node)
 	if err != nil {
 		return err
 	}
+	// 设置最后一次上报时间
 	kl.lastStatusReportTime = now
 	kl.setLastObservedNodeAddresses(updatedNode.Status.Addresses)
 	// If update finishes successfully, mark the volumeInUse as reportedInUse to indicate
@@ -554,6 +559,7 @@ func (kl *Kubelet) recordNodeSchedulableEvent(node *v1.Node) error {
 // TODO(madhusudancs): Simplify the logic for setting node conditions and
 // refactor the node status condition code out to a different file.
 func (kl *Kubelet) setNodeStatus(node *v1.Node) {
+	// 遍历执行所以状态函数 这些函数根据自身功能为node增加对应状态信息
 	for i, f := range kl.setNodeStatusFuncs {
 		klog.V(5).Infof("Setting node status at position %v", i)
 		if err := f(node); err != nil {
@@ -576,6 +582,7 @@ func (kl *Kubelet) getLastObservedNodeAddresses() []v1.NodeAddress {
 // defaultNodeStatusFuncs is a factory that generates the default set of
 // setNodeStatus funcs
 func (kl *Kubelet) defaultNodeStatusFuncs() []func(*v1.Node) error {
+	// 生成node status
 	// if cloud is not nil, we expect the cloud resource sync manager to exist
 	var nodeAddressesFunc func() ([]v1.NodeAddress, error)
 	if kl.cloud != nil {
@@ -585,14 +592,21 @@ func (kl *Kubelet) defaultNodeStatusFuncs() []func(*v1.Node) error {
 	if kl.appArmorValidator != nil {
 		validateHostFunc = kl.appArmorValidator.ValidateHost
 	}
+	// node状态处理函数每个Setter类型函数都是用来为node增加对应状态
 	var setters []func(n *v1.Node) error
 	setters = append(setters,
+		// IP地址 主机名 node.status.addresses
 		nodestatus.NodeAddress(kl.nodeIP, kl.nodeIPValidator, kl.hostname, kl.hostnameOverridden, kl.externalCloudProvider, kl.cloud, nodeAddressesFunc),
+		// node.status.capacity
 		nodestatus.MachineInfo(string(kl.nodeName), kl.maxPods, kl.podsPerCore, kl.GetCachedMachineInfo, kl.containerManager.GetCapacity,
 			kl.containerManager.GetDevicePluginResourceCapacity, kl.containerManager.GetNodeAllocatableReservation, kl.recordEvent),
+		// kernel，kubelet等版本信息
 		nodestatus.VersionInfo(kl.cadvisor.VersionInfo, kl.containerRuntime.Type, kl.containerRuntime.Version),
+		// node.status.daemonEndpoints
 		nodestatus.DaemonEndpoints(kl.daemonEndpoints),
+		// noed节点所有images信息 node.status.image
 		nodestatus.Images(kl.nodeStatusMaxImages, kl.imageManager.GetImageList),
+		// node.status.nodeInfo 操作系统/架构
 		nodestatus.GoRuntime(),
 	)
 	// Volume limits

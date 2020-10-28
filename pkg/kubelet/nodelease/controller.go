@@ -51,10 +51,12 @@ type Controller interface {
 }
 
 type controller struct {
-	client                     clientset.Interface
-	leaseClient                coordclientset.LeaseInterface
-	holderIdentity             string
-	leaseDurationSeconds       int32
+	// 用于访问APiServer的client
+	client               clientset.Interface
+	leaseClient          coordclientset.LeaseInterface
+	holderIdentity       string
+	leaseDurationSeconds int32
+	// 更新间隔
 	renewInterval              time.Duration
 	clock                      clock.Clock
 	onRepeatedHeartbeatFailure func()

@@ -569,6 +569,7 @@ func MemoryPressureCondition(nowFunc func() time.Time, // typically Kubelet.cloc
 		var condition *v1.NodeCondition
 
 		// Check if NodeMemoryPressure condition already exists and if it does, just pick it up for update.
+		// 检查是否已经存在NodeMemoryPressure
 		for i := range node.Status.Conditions {
 			if node.Status.Conditions[i].Type == v1.NodeMemoryPressure {
 				condition = &node.Status.Conditions[i]
@@ -589,6 +590,7 @@ func MemoryPressureCondition(nowFunc func() time.Time, // typically Kubelet.cloc
 		}
 
 		// Update the heartbeat time
+		// 最后一次心跳时间
 		condition.LastHeartbeatTime = currentTime
 
 		// Note: The conditions below take care of the case when a new NodeMemoryPressure condition is
