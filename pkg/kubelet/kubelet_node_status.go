@@ -425,7 +425,6 @@ func (kl *Kubelet) syncNodeStatus() {
 		// This will exit immediately if it doesn't need to do anything.
 		kl.registerWithAPIServer()
 	}
-	//
 	if err := kl.updateNodeStatus(); err != nil {
 		klog.Errorf("Unable to update node status: %v", err)
 	}
@@ -435,7 +434,7 @@ func (kl *Kubelet) syncNodeStatus() {
 // change or enough time passed from the last sync.
 func (kl *Kubelet) updateNodeStatus() error {
 	klog.V(5).Infof("Updating node status")
-	// 重试次数(nodeStatusUpdateRetry) 默认为5次
+	// 重试次数(nodeStatusUpdateRetry) 默认 5次
 	for i := 0; i < nodeStatusUpdateRetry; i++ {
 		if err := kl.tryUpdateNodeStatus(i); err != nil {
 			if i > 0 && kl.onRepeatedHeartbeatFailure != nil {
@@ -459,10 +458,11 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	// seem to cause more conflict - the delays are pretty small).
 	// If it result in a conflict, all retries are served directly from etcd.
 	opts := metav1.GetOptions{}
+	// 判断如果是第一次 默认读缓存中读数据
 	if tryNumber == 0 {
 		util.FromApiserverCache(&opts)
 	}
-	// 获取node信息
+	// 根据nodename获取node对象
 	node, err := kl.heartbeatClient.CoreV1().Nodes().Get(context.TODO(), string(kl.nodeName), opts)
 	if err != nil {
 		return fmt.Errorf("error getting node %q: %v", kl.nodeName, err)
@@ -472,7 +472,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	if originalNode == nil {
 		return fmt.Errorf("nil %q node object", kl.nodeName)
 	}
-
+	// 判断podCIDRChanged是否发生变化
 	podCIDRChanged := false
 	if len(node.Spec.PodCIDRs) != 0 {
 		// Pod CIDR could have been updated before, so we cannot rely on
@@ -600,11 +600,11 @@ func (kl *Kubelet) defaultNodeStatusFuncs() []func(*v1.Node) error {
 		// node.status.capacity
 		nodestatus.MachineInfo(string(kl.nodeName), kl.maxPods, kl.podsPerCore, kl.GetCachedMachineInfo, kl.containerManager.GetCapacity,
 			kl.containerManager.GetDevicePluginResourceCapacity, kl.containerManager.GetNodeAllocatableReservation, kl.recordEvent),
-		// kernel，kubelet等版本信息
+		// node.status.nodeInfo kernel，kubelet等版本信息
 		nodestatus.VersionInfo(kl.cadvisor.VersionInfo, kl.containerRuntime.Type, kl.containerRuntime.Version),
 		// node.status.daemonEndpoints
 		nodestatus.DaemonEndpoints(kl.daemonEndpoints),
-		// noed节点所有images信息 node.status.image
+		// node.status.image noed节点所有images信息
 		nodestatus.Images(kl.nodeStatusMaxImages, kl.imageManager.GetImageList),
 		// node.status.nodeInfo 操作系统/架构
 		nodestatus.GoRuntime(),

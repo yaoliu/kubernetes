@@ -578,6 +578,7 @@ func MemoryPressureCondition(nowFunc func() time.Time, // typically Kubelet.cloc
 
 		newCondition := false
 		// If the NodeMemoryPressure condition doesn't exist, create one
+		// 判断如果NodeMemoryPressure不存在 则创建一个
 		if condition == nil {
 			condition = &v1.NodeCondition{
 				Type:   v1.NodeMemoryPressure,

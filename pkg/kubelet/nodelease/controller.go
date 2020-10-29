@@ -52,9 +52,11 @@ type Controller interface {
 
 type controller struct {
 	// 用于访问APiServer的client
-	client               clientset.Interface
-	leaseClient          coordclientset.LeaseInterface
-	holderIdentity       string
+	client      clientset.Interface
+	leaseClient coordclientset.LeaseInterface
+	// 身份凭证 默认 nodename
+	holderIdentity string
+	//
 	leaseDurationSeconds int32
 	// 更新间隔
 	renewInterval              time.Duration
@@ -62,6 +64,7 @@ type controller struct {
 	onRepeatedHeartbeatFailure func()
 
 	// latestLease is the latest node lease which Kubelet updated or created
+	// 每一个node/kubelet 都要维护一个和自己有关最新的lease对象
 	latestLease *coordinationv1.Lease
 }
 
