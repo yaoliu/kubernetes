@@ -79,6 +79,7 @@ func (h *TimedQueue) Pop() interface{} {
 
 // UniqueQueue is a FIFO queue which additionally guarantees that any
 // element can be added only once until it is removed.
+// 去重的优先级队列
 type UniqueQueue struct {
 	lock  sync.Mutex
 	queue TimedQueue

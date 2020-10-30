@@ -130,7 +130,7 @@ func deletePodHandler(c clientset.Interface, emitEventFunc func(types.Namespaced
 }
 
 func getNoExecuteTaints(taints []v1.Taint) []v1.Taint {
-	// 获取
+	// 获取污点效果为NoExecute
 	result := []v1.Taint{}
 	for i := range taints {
 		if taints[i].Effect == v1.TaintEffectNoExecute {

@@ -73,6 +73,7 @@ func DeletePods(kubeClient clientset.Interface, pods []*v1.Pod, recorder record.
 			continue
 		}
 		// if the pod is managed by a daemonset, ignore it
+		// 如果pod是daemonset管理的 则忽略此Pod
 		if _, err := daemonStore.GetPodDaemonSets(pod); err == nil {
 			// No error means at least one daemonset was found
 			continue

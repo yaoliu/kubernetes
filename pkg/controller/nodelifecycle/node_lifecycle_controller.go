@@ -128,8 +128,8 @@ const (
 	// Zone分类
 	stateInitial           = ZoneState("Initial")           // 刚完成初始化 加入集群
 	stateNormal            = ZoneState("Normal")            // 正常状态
-	stateFullDisruption    = ZoneState("FullDisruption")    //将处于notReady的加入该zone
-	statePartialDisruption = ZoneState("PartialDisruption") //该zone中部分node notReady，此时已经超过了unhealthyZoneThreshold设置的阈值
+	stateFullDisruption    = ZoneState("FullDisruption")    // 将处于notReady的加入该zone
+	statePartialDisruption = ZoneState("PartialDisruption") // 该zone中部分node notReady，此时已经超过了unhealthyZoneThreshold设置的阈值
 )
 
 const (
@@ -173,9 +173,9 @@ type nodeHealthData struct {
 	// 上次心跳探测时间
 	probeTimestamp           metav1.Time
 	readyTransitionTimestamp metav1.Time
-	// node状态
+	// node status
 	status *v1.NodeStatus
-	// 租约
+	// node 租约对象
 	lease *coordv1.Lease
 }
 
@@ -191,7 +191,7 @@ func (n *nodeHealthData) deepCopy() *nodeHealthData {
 	}
 }
 
-// 线程安全map 用来存每个node的心跳数据
+// 用来存每个node心跳数据(node status && node lease) 线程安全
 type nodeHealthMap struct {
 	lock        sync.RWMutex
 	nodeHealths map[string]*nodeHealthData
@@ -295,10 +295,10 @@ type Controller struct {
 	enterFullDisruptionFunc func(nodeNum int) float32
 	// 计算node所属zone及未就绪node数量
 	computeZoneStateFunc func(nodeConditions []*v1.NodeCondition) (int, ZoneState)
-
+	// 存node
 	knownNodeSet map[string]*v1.Node
 	// per Node map storing last observed health together with a local time when it was observed.
-	// 记录node最近一次健康数据(心跳信息)
+	// 记录node最近一次心跳信息
 	nodeHealthMap *nodeHealthMap
 
 	// evictorLock protects zonePodEvictor and zoneNoExecuteTainter.
@@ -308,6 +308,7 @@ type Controller struct {
 	// workers that evicts pods from unresponsive nodes.
 	zonePodEvictor map[string]*scheduler.RateLimitedTimedQueue
 	// workers that are responsible for tainting nodes.
+	// 用来存放有异常的nodee monitorNodeHealth()作为生产者将node加入到此队列
 	zoneNoExecuteTainter map[string]*scheduler.RateLimitedTimedQueue
 
 	nodesToRetry sync.Map
@@ -361,7 +362,8 @@ type Controller struct {
 	//    value takes longer for user to see up-to-date node health.
 	nodeMonitorGracePeriod time.Duration
 
-	podEvictionTimeout          time.Duration
+	podEvictionTimeout time.Duration
+	// zone state = normal 的驱逐速率 默认为0.1 即每个10s清除一个node
 	evictionLimiterQPS          float32
 	secondaryEvictionLimiterQPS float32
 	largeClusterThreshold       int32
@@ -439,6 +441,7 @@ func NewNodeLifecycleController(
 	// 和zone相关的方法
 	nc.enterPartialDisruptionFunc = nc.ReducedQPSFunc
 	nc.enterFullDisruptionFunc = nc.HealthyQPSFunc
+	// 计算node所属zone及未就绪zone的数量
 	nc.computeZoneStateFunc = nc.ComputeZoneState
 
 	// 监听watch pod add/update/delete等事件 并且调用对应事件注册的函数
@@ -578,7 +581,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync("taint", stopCh, nc.leaseInformerSynced, nc.nodeInformerSynced, nc.podInformerSynced, nc.daemonSetInformerSynced) {
 		return
 	}
-	// 运行TaintManager 完成Pod的驱逐任务
+	// 运行TaintManager 根据容忍和污点等特性完成对Pod的驱逐任务
 	if nc.runTaintManager {
 		go nc.taintManager.Run(stopCh)
 	}
@@ -606,6 +609,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 		// Handling taint based evictions. Because we don't want a dedicated logic in TaintManager for NC-originated
 		// taints and we normally don't rate limit evictions caused by taints, we need to rate limit adding taints.
 		// 如果开启TaintManager 则运行doNoExecuteTaintingPass
+		// 处理nc.zoneNoExecuteTainter队列中的数据
 		go wait.Until(nc.doNoExecuteTaintingPass, scheduler.NodeEvictionPeriod, stopCh)
 	} else {
 		// Managing eviction of nodes:
@@ -720,6 +724,7 @@ func (nc *Controller) doNoExecuteTaintingPass() {
 	for k := range nc.zoneNoExecuteTainter {
 		// Function should return 'false' and a time after which it should be retried, or 'true' if it shouldn't (it succeeded).
 		nc.zoneNoExecuteTainter[k].Try(func(value scheduler.TimedValue) (bool, time.Duration) {
+			// 获取node对象
 			node, err := nc.nodeLister.Get(value.Value)
 			if apierrors.IsNotFound(err) {
 				klog.Warningf("Node %v no longer present in nodeLister!", value.Value)
@@ -729,23 +734,28 @@ func (nc *Controller) doNoExecuteTaintingPass() {
 				// retry in 50 millisecond
 				return false, 50 * time.Millisecond
 			}
+			// 获取node的NodeReadyConditions
 			_, condition := nodeutil.GetNodeCondition(&node.Status, v1.NodeReady)
 			// Because we want to mimic NodeStatus.Condition["Ready"] we make "unreachable" and "not ready" taints mutually exclusive.
 			taintToAdd := v1.Taint{}
 			oppositeTaint := v1.Taint{}
 			switch condition.Status {
 			case v1.ConditionFalse:
+				// 如果status为fasle 则为node添加
 				taintToAdd = *NotReadyTaintTemplate
+				// 如果status为fasle 则为node移除
 				oppositeTaint = *UnreachableTaintTemplate
 			case v1.ConditionUnknown:
+				// 如果status为unknown 则为node添加
 				taintToAdd = *UnreachableTaintTemplate
+				// 如果status为unknown 则为node移除
 				oppositeTaint = *NotReadyTaintTemplate
 			default:
 				// It seems that the Node is ready again, so there's no need to taint it.
 				klog.V(4).Infof("Node %v was in a taint queue, but it's ready now. Ignoring taint request.", value.Value)
 				return true, 0
 			}
-
+			// 更新node.taints
 			result := nodeutil.SwapNodeControllerTaint(nc.kubeClient, []*v1.Taint{&taintToAdd}, []*v1.Taint{&oppositeTaint}, node)
 			if result {
 				//count the evictionsNumber
@@ -764,6 +774,7 @@ func (nc *Controller) doEvictionPass() {
 	for k := range nc.zonePodEvictor {
 		// Function should return 'false' and a time after which it should be retried, or 'true' if it shouldn't (it succeeded).
 		nc.zonePodEvictor[k].Try(func(value scheduler.TimedValue) (bool, time.Duration) {
+			// 获取node对象
 			node, err := nc.nodeLister.Get(value.Value)
 			if apierrors.IsNotFound(err) {
 				klog.Warningf("Node %v no longer present in nodeLister!", value.Value)
@@ -771,11 +782,13 @@ func (nc *Controller) doEvictionPass() {
 				klog.Warningf("Failed to get Node %v from the nodeLister: %v", value.Value, err)
 			}
 			nodeUID, _ := value.UID.(string)
+			// 根据nodename获取所有相关到Pod
 			pods, err := nc.getPodsAssignedToNode(value.Value)
 			if err != nil {
 				utilruntime.HandleError(fmt.Errorf("unable to list pods from node %q: %v", value.Value, err))
 				return false, 0
 			}
+			// 删除该node上所有pod
 			remaining, err := nodeutil.DeletePods(nc.kubeClient, pods, nc.recorder, value.Value, nodeUID, nc.daemonSetStore)
 			if err != nil {
 				// We are not setting eviction status here.
@@ -833,9 +846,12 @@ func (nc *Controller) monitorNodeHealth() error {
 		nc.knownNodeSet[added[i].Name] = added[i]
 		// 进行分类 将node划分到zone里
 		nc.addPodEvictorForNewZone(added[i])
+		// 判断是否开启TaintManager
 		if nc.runTaintManager {
+			// 移除node的taints中Unreachable，NotReady，并从zoneNoExecuteTainter移除
 			nc.markNodeAsReachable(added[i])
 		} else {
+			// 从zonePodEvictor移除node
 			nc.cancelPodEviction(added[i])
 		}
 	}
@@ -1053,23 +1069,24 @@ func legacyIsMasterNode(nodeName string) bool {
 // tryUpdateNodeHealth checks a given node's conditions and tries to update it. Returns grace period to
 // which given node is entitled, state of current and last observed Ready Condition, and an error if it occurred.
 func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.NodeCondition, *v1.NodeCondition, error) {
-	// 获取node最近一次的health数据
+	// 获取node最近一次的心跳信息
 	nodeHealth := nc.nodeHealthMap.getDeepCopy(node.Name)
 	defer func() {
-		// 更新/设置node的health数据
+		// 更新node的心跳信息
 		nc.nodeHealthMap.set(node.Name, nodeHealth)
 	}()
 
 	var gracePeriod time.Duration
 	var observedReadyCondition v1.NodeCondition
-	// 从当前node.status.Conditions获取NodeReady类型作为currentReadyCondition
+	// 从当前node.status.Conditions获取NodeReady
 	_, currentReadyCondition := nodeutil.GetNodeCondition(&node.Status, v1.NodeReady)
 	if currentReadyCondition == nil {
 		// If ready condition is nil, then kubelet (or nodecontroller) never posted node status.
 		// A fake ready condition is created, where LastHeartbeatTime and LastTransitionTime is set
 		// to node.CreationTimestamp to avoid handle the corner case.
 		// 如果currentReadyCondition不存在 此时kubelet 或者 nodecontroller 应该是没有上报node的状态
-		// 此时为node fake(伪造) 一个ready condition status="Unknown" LastHeartbeatTime和LastTransitionTime 为node的创建时间 如下
+		// 此时为node fake(伪造) 一个ready condition status="Unknown"
+		// LastHeartbeatTime和LastTransitionTime 为node的创建时间
 		observedReadyCondition = v1.NodeCondition{
 			Type:               v1.NodeReady,
 			Status:             v1.ConditionUnknown,
@@ -1078,10 +1095,11 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 		}
 
 		gracePeriod = nc.nodeStartupGracePeriod
-		// 更新nodeHealth状态
+		// 如果存在 更新node状态
 		if nodeHealth != nil {
 			nodeHealth.status = &node.Status
 		} else {
+			// 如果不存在 就创建
 			nodeHealth = &nodeHealthData{
 				status:                   &node.Status,
 				probeTimestamp:           node.CreationTimestamp,
@@ -1111,11 +1129,12 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 	var savedCondition *v1.NodeCondition
 	var savedLease *coordv1.Lease
 	if nodeHealth != nil {
-		// 从nodeHealth里获取node.status.condition.type = "Ready"
+		// 从node心跳信息里获取node.status.condition.type = "Ready"
 		_, savedCondition = nodeutil.GetNodeCondition(nodeHealth.status, v1.NodeReady)
 		savedLease = nodeHealth.lease
 	}
 	// 根据savedCondition,currentReadyCondition来创建nodeHealth数据
+	// 如果nodeHealth是空的 则创建nodeHealth
 	if nodeHealth == nil {
 		klog.Warningf("Missing timestamp for Node %s. Assuming now as a timestamp.", node.Name)
 		nodeHealth = &nodeHealthData{
@@ -1230,32 +1249,46 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 }
 
 func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.NodeCondition, nodes []*v1.Node) {
+	// 创建新的 zoneState
 	newZoneStates := map[string]ZoneState{}
+	// 默认值为true
 	allAreFullyDisrupted := true
 	for k, v := range zoneToNodeConditions {
+		// metric
 		zoneSize.WithLabelValues(k).Set(float64(len(v)))
+		// 计算node所属zone及未就绪node数量
 		unhealthy, newState := nc.computeZoneStateFunc(v)
+		// metric
 		zoneHealth.WithLabelValues(k).Set(float64(100*(len(v)-unhealthy)) / float64(len(v)))
+		// metric
 		unhealthyNodes.WithLabelValues(k).Set(float64(unhealthy))
+		// newstate不为stateFullDisruption 将allAreFullyDisrupted标志为false
 		if newState != stateFullDisruption {
 			allAreFullyDisrupted = false
 		}
+		// 将newState保存到newZoneStates里
 		newZoneStates[k] = newState
 		if _, had := nc.zoneStates[k]; !had {
 			klog.Errorf("Setting initial state for unseen zone: %v", k)
+			// 设置为初始化状态
 			nc.zoneStates[k] = stateInitial
 		}
 	}
-
+	// 处理上一次观测处理的zoneState数据
+	// 默认值为true
 	allWasFullyDisrupted := true
+	// 遍历上一次观测处理的zoneState数据
 	for k, v := range nc.zoneStates {
+		// 判断如果不在zoneToNodeConditions里 则从nc.zoneStates删除
 		if _, have := zoneToNodeConditions[k]; !have {
+			// metric
 			zoneSize.WithLabelValues(k).Set(0)
 			zoneHealth.WithLabelValues(k).Set(100)
 			unhealthyNodes.WithLabelValues(k).Set(0)
 			delete(nc.zoneStates, k)
 			continue
 		}
+		// 判断上一次的状态是否为FullDisruption状态
 		if v != stateFullDisruption {
 			allWasFullyDisrupted = false
 			break
@@ -1267,12 +1300,18 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 	// - if the new state is "normal" we resume normal operation (go back to default limiter settings),
 	// - if new state is "fullDisruption" we restore normal eviction rate,
 	//   - unless all zones in the cluster are in "fullDisruption" - in that case we stop all evictions.
+	// 如果新的zoneState 或者上一次观测的zoneState 有一个存在
 	if !allAreFullyDisrupted || !allWasFullyDisrupted {
 		// We're switching to full disruption mode
+		// 切换到了FullyDisrupted模式
+		// 当allAreFullyDisrupted = true allWasFullyDisrupted = false
 		if allAreFullyDisrupted {
 			klog.V(0).Info("Controller detected that all Nodes are not-Ready. Entering master disruption mode.")
+			// 遍历所有node
 			for i := range nodes {
+				// 判断是否开启了TaintManager
 				if nc.runTaintManager {
+					// 移除node的taints中Unreachable，NotReady，并从zoneNoExecuteTainter移除
 					_, err := nc.markNodeAsReachable(nodes[i])
 					if err != nil {
 						klog.Errorf("Failed to remove taints from Node %v", nodes[i].Name)
@@ -1315,6 +1354,7 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 		}
 		// We know that there's at least one not-fully disrupted so,
 		// we can use default behavior for rate limiters
+		// 遍历所有zoneState 为每个zoneState设置不同的驱逐速率
 		for k, v := range nc.zoneStates {
 			newState := newZoneStates[k]
 			if v == newState {
@@ -1412,8 +1452,10 @@ func (nc *Controller) processPod(podItem podUpdateItem) {
 }
 
 func (nc *Controller) setLimiterInZone(zone string, zoneSize int, state ZoneState) {
+	// 根据不同的zoneState设置对应的驱逐速率
 	switch state {
 	case stateNormal:
+		// Normal驱逐速率为evictionLimiterQPS 每隔10秒清除一个节点
 		if nc.runTaintManager {
 			nc.zoneNoExecuteTainter[zone].SwapLimiter(nc.evictionLimiterQPS)
 		} else {
@@ -1578,6 +1620,7 @@ func (nc *Controller) markNodeForTainting(node *v1.Node, status v1.ConditionStat
 }
 
 func (nc *Controller) markNodeAsReachable(node *v1.Node) (bool, error) {
+	// 移除node的taints中Unreachable，NotReady，并从zoneNoExecuteTainter移除
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()
 	err := controller.RemoveTaintOffNode(nc.kubeClient, node.Name, node, UnreachableTaintTemplate)
@@ -1599,6 +1642,7 @@ func (nc *Controller) markNodeAsReachable(node *v1.Node) (bool, error) {
 // - partiallyDisrupted if at least than nc.unhealthyZoneThreshold percent of Nodes are not Ready,
 // - normal otherwise
 func (nc *Controller) ComputeZoneState(nodeReadyConditions []*v1.NodeCondition) (int, ZoneState) {
+	// 根据ready和notready来对node划分到不同zone下
 	readyNodes := 0
 	notReadyNodes := 0
 	for i := range nodeReadyConditions {
@@ -1609,11 +1653,14 @@ func (nc *Controller) ComputeZoneState(nodeReadyConditions []*v1.NodeCondition) 
 		}
 	}
 	switch {
+	// fullyDisrupted zone下所有node都处于notready状态
 	case readyNodes == 0 && notReadyNodes > 0:
 		return notReadyNodes, stateFullDisruption
+		// PartialDisruption zone下 notready总占比要>=unhealthyZoneThreshold的值
 	case notReadyNodes > 2 && float32(notReadyNodes)/float32(notReadyNodes+readyNodes) >= nc.unhealthyZoneThreshold:
 		return notReadyNodes, statePartialDisruption
 	default:
+		// 不属于以上2种情况
 		return notReadyNodes, stateNormal
 	}
 }
