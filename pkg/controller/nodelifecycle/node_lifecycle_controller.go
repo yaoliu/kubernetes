@@ -278,6 +278,7 @@ type Controller struct {
 	// 用于驱逐node上的Pod 完成pod驱逐任务
 	// 运行在node上的pod 如果没有配置容忍(NoExecute) 那么如果这个node设置了污点(taint) 那么这个Pod会被驱逐
 	// 如果未开启taintManager 已经运行的Pod不会被驱逐 新创建的Pod如果配置了容忍 才能调度到这个node上
+	// runTaintManager用来标记是否运行
 	taintManager *scheduler.NoExecuteTaintManager
 	// 用于获取pod元数据
 	podLister corelisters.PodLister
@@ -306,25 +307,26 @@ type Controller struct {
 	evictorLock     sync.Mutex
 	nodeEvictionMap *nodeEvictionMap
 	// workers that evicts pods from unresponsive nodes.
+	// 用来存放有异常的node 如果未开启taintManager monitorNodeHealth()作为生产者将node加入到此队列
 	zonePodEvictor map[string]*scheduler.RateLimitedTimedQueue
 	// workers that are responsible for tainting nodes.
-	// 用来存放有异常的nodee monitorNodeHealth()作为生产者将node加入到此队列
+	// 用来存放有异常的node 如果开启taintManager monitorNodeHealth()作为生产者将node加入到此队列
 	zoneNoExecuteTainter map[string]*scheduler.RateLimitedTimedQueue
 
 	nodesToRetry sync.Map
-	// 将node划分到不同种类到Zone里
+	// 将node划分到不同的Zone里
 	zoneStates map[string]ZoneState
 	// 用于获取daemonSet元数据
 	daemonSetStore appsv1listers.DaemonSetLister
 	// 记录daemonset同步cache状态
 	daemonSetInformerSynced cache.InformerSynced
-
+	// 获取node租约元数据
 	leaseLister         coordlisters.LeaseLister
 	leaseInformerSynced cache.InformerSynced
 	// 用于获取node元数据
 	nodeLister         corelisters.NodeLister
 	nodeInformerSynced cache.InformerSynced
-	// 根据nodename获取
+	// 根据nodename获取pod
 	getPodsAssignedToNode func(nodeName string) ([]*v1.Pod, error)
 	// 事件记录器
 	recorder record.EventRecorder
@@ -438,8 +440,9 @@ func NewNodeLifecycleController(
 		nodeUpdateQueue:             workqueue.NewNamed("node_lifecycle_controller"),
 		podUpdateQueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "node_lifecycle_controller_pods"),
 	}
-	// 和zone相关的方法
+	// 计算PartialDisruption zone下node驱逐速率
 	nc.enterPartialDisruptionFunc = nc.ReducedQPSFunc
+	// 计算FullDisruption zone下node驱逐速率
 	nc.enterFullDisruptionFunc = nc.HealthyQPSFunc
 	// 计算node所属zone及未就绪zone的数量
 	nc.computeZoneStateFunc = nc.ComputeZoneState
@@ -1397,6 +1400,7 @@ func (nc *Controller) doPodProcessingWorker() {
 // 3. if node doesn't exist in cache, it will be skipped and handled later by doEvictionPass
 func (nc *Controller) processPod(podItem podUpdateItem) {
 	defer nc.podUpdateQueue.Done(podItem)
+	// 获取Pod对象
 	pod, err := nc.podLister.Pods(podItem.namespace).Get(podItem.name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
