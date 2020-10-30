@@ -854,6 +854,7 @@ type Kubelet struct {
 	cadvisor cadvisor.Interface
 
 	// Set to true to have the node register itself with the apiserver.
+	// 自动向 APIServer 服务注册
 	registerNode bool
 	// List of taints to add to a node object when the kubelet registers itself.
 	registerWithTaints []api.Taint
