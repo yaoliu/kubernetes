@@ -84,11 +84,15 @@ func NewStatefulSetController(
 	revInformer appsinformers.ControllerRevisionInformer,
 	kubeClient clientset.Interface,
 ) *StatefulSetController {
+	// 创建事件管理器
 	eventBroadcaster := record.NewBroadcaster()
+	// 设置事件上报到klog
 	eventBroadcaster.StartStructuredLogging(0)
+	// 设置事件上报到Api Server
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
+	// 创建事件收集器
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "statefulset-controller"})
-
+	// 初始化Statefulset
 	ssc := &StatefulSetController{
 		kubeClient: kubeClient,
 		control: NewDefaultStatefulSetControl(
@@ -108,7 +112,7 @@ func NewStatefulSetController(
 
 		revListerSynced: revInformer.Informer().HasSynced,
 	}
-
+	// 监听watch pod add等事件 并且调用对应事件注册的函数
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		// lookup the statefulset and enqueue
 		AddFunc: ssc.addPod,
@@ -119,7 +123,7 @@ func NewStatefulSetController(
 	})
 	ssc.podLister = podInformer.Lister()
 	ssc.podListerSynced = podInformer.Informer().HasSynced
-
+	// 监听watch sst add等事件 并且调用对应事件注册的函数
 	setInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: ssc.enqueueStatefulSet,
@@ -148,11 +152,11 @@ func (ssc *StatefulSetController) Run(workers int, stopCh <-chan struct{}) {
 
 	klog.Infof("Starting stateful set controller")
 	defer klog.Infof("Shutting down statefulset controller")
-
+	// 等待pod cache && statefulSet cache  && pvc cache && revision cache是否同步完成
 	if !cache.WaitForNamedCacheSync("stateful set", stopCh, ssc.podListerSynced, ssc.setListerSynced, ssc.pvcListerSynced, ssc.revListerSynced) {
 		return
 	}
-
+	// 开启workers数的gorutinue 每个gorutinue都调用ssc.worker
 	for i := 0; i < workers; i++ {
 		go wait.Until(ssc.worker, time.Second, stopCh)
 	}
@@ -386,6 +390,7 @@ func (ssc *StatefulSetController) enqueueStatefulSet(obj interface{}) {
 // processNextWorkItem dequeues items, processes them, and marks them done. It enforces that the syncHandler is never
 // invoked concurrently with the same key.
 func (ssc *StatefulSetController) processNextWorkItem() bool {
+	// 从queue队列获取一个ssKey ssKey的格式为{nameSpace}/{statefulSetName} 例如:default/nginx
 	key, quit := ssc.queue.Get()
 	if quit {
 		return false
@@ -408,11 +413,12 @@ func (ssc *StatefulSetController) worker() {
 
 // sync syncs the given statefulset.
 func (ssc *StatefulSetController) sync(key string) error {
+	// startTime和defer配合记录sync的耗时
 	startTime := time.Now()
 	defer func() {
 		klog.V(4).Infof("Finished syncing statefulset %q (%v)", key, time.Since(startTime))
 	}()
-
+	// 将key切分为namespace和name 例如:defalut/pi 切分为default和pi pi为statefulSetName default为namespace
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -427,18 +433,19 @@ func (ssc *StatefulSetController) sync(key string) error {
 		utilruntime.HandleError(fmt.Errorf("unable to retrieve StatefulSet %v from store: %v", key, err))
 		return err
 	}
-	// 创建选择器
+	// 根据set.Spec.Selector创建选择器
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("error converting StatefulSet %v selector: %v", key, err))
 		// This is a non-transient error, so don't retry.
 		return nil
 	}
-
+	// adopt收养/领养
+	// 孤儿的ControllerRevision进行匹配/解除关联
 	if err := ssc.adoptOrphanRevisions(set); err != nil {
 		return err
 	}
-	// 获取所有Pod
+	// 使用选择器进行匹配获取所有关联的Pod
 	pods, err := ssc.getPodsForStatefulSet(set, selector)
 	if err != nil {
 		return err
