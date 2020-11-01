@@ -82,13 +82,14 @@ func (ssc *defaultStatefulSetControl) UpdateStatefulSet(set *apps.StatefulSet, p
 	}
 	// 根据创建时间进行排序
 	history.SortControllerRevisions(revisions)
-	// 执行更新操作 并获取相关current revision update revision
+	// 执行更新操作 并获取相关current revision 和 update revision
 	currentRevision, updateRevision, err := ssc.performUpdate(set, pods, revisions)
 	if err != nil {
 		return utilerrors.NewAggregate([]error{err, ssc.truncateHistory(set, pods, revisions, currentRevision, updateRevision)})
 	}
 
 	// maintain the set's revision history limit
+	// 清理过期的ControllerRevision
 	return ssc.truncateHistory(set, pods, revisions, currentRevision, updateRevision)
 }
 
@@ -208,17 +209,19 @@ func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 	var currentRevision, updateRevision *apps.ControllerRevision
 	// 计算ControllerRevision数量
 	revisionCount := len(revisions)
-	// 排序
+	// 对ControllerRevision进行排序
 	history.SortControllerRevisions(revisions)
 
 	// Use a local copy of set.Status.CollisionCount to avoid modifying set.Status directly.
 	// This copy is returned so the value gets carried over to set.Status in updateStatefulSet.
+	// 用来hash的种子
 	var collisionCount int32
 	if set.Status.CollisionCount != nil {
 		collisionCount = *set.Status.CollisionCount
 	}
 
 	// create a new revision from the current set
+	// 创建新的ControllerRevision
 	updateRevision, err := newRevision(set, nextRevision(revisions), &collisionCount)
 	if err != nil {
 		return nil, nil, collisionCount, err
@@ -290,6 +293,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	}
 
 	// set the generation, and revisions in the returned status
+	// 计算状态
 	status := apps.StatefulSetStatus{}
 	status.ObservedGeneration = set.Generation
 	status.CurrentRevision = currentRevision.Name

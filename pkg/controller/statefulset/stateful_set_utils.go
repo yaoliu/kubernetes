@@ -308,10 +308,12 @@ func getPatch(set *apps.StatefulSet) ([]byte, error) {
 // ControllerRevision is valid. StatefulSet revisions are stored as patches that re-apply the current state of set
 // to a new StatefulSet using a strategic merge patch to replace the saved state of the new StatefulSet.
 func newRevision(set *apps.StatefulSet, revision int64, collisionCount *int32) (*apps.ControllerRevision, error) {
+	// 将sts对象转为ControllerRevision.data
 	patch, err := getPatch(set)
 	if err != nil {
 		return nil, err
 	}
+	// 创建ControllerRevision
 	cr, err := history.NewControllerRevision(set,
 		controllerKind,
 		set.Spec.Template.Labels,
@@ -324,6 +326,7 @@ func newRevision(set *apps.StatefulSet, revision int64, collisionCount *int32) (
 	if cr.ObjectMeta.Annotations == nil {
 		cr.ObjectMeta.Annotations = make(map[string]string)
 	}
+	// 将sts.metadata.Annotations 复制给ControllerRevision.metadata.Annotations
 	for key, value := range set.Annotations {
 		cr.ObjectMeta.Annotations[key] = value
 	}
@@ -350,6 +353,7 @@ func ApplyRevision(set *apps.StatefulSet, revision *apps.ControllerRevision) (*a
 // is 0 this is 1. Otherwise, it is 1 greater than the largest revision's Revision. This method
 // assumes that revisions has been sorted by Revision.
 func nextRevision(revisions []*apps.ControllerRevision) int64 {
+	// 用来计算下一个revision号
 	count := len(revisions)
 	if count <= 0 {
 		return 1

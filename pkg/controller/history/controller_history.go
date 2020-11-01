@@ -72,6 +72,7 @@ func NewControllerRevision(parent metav1.Object,
 	for k, v := range templateLabels {
 		labelMap[k] = v
 	}
+	// 初始化ControllerRevision
 	cr := &apps.ControllerRevision{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:          labelMap,
@@ -80,6 +81,7 @@ func NewControllerRevision(parent metav1.Object,
 		Data:     data,
 		Revision: revision,
 	}
+	// 根据sts.status.collisionCount生成hash
 	hash := HashControllerRevision(cr, collisionCount)
 	cr.Name = ControllerRevisionName(parent.GetName(), hash)
 	cr.Labels[ControllerRevisionHashLabel] = hash
@@ -110,6 +112,7 @@ func SortControllerRevisions(revisions []*apps.ControllerRevision) {
 // EqualRevision returns true if lhs and rhs are either both nil, or both point to non-nil ControllerRevisions that
 // contain semantically equivalent data. Otherwise this method returns false.
 func EqualRevision(lhs *apps.ControllerRevision, rhs *apps.ControllerRevision) bool {
+	//
 	var lhsHash, rhsHash *uint32
 	if lhs == nil || rhs == nil {
 		return lhs == rhs
@@ -137,6 +140,7 @@ func EqualRevision(lhs *apps.ControllerRevision, rhs *apps.ControllerRevision) b
 // FindEqualRevisions returns all ControllerRevisions in revisions that are equal to needle using EqualRevision as the
 // equality test. The returned slice preserves the order of revisions.
 func FindEqualRevisions(revisions []*apps.ControllerRevision, needle *apps.ControllerRevision) []*apps.ControllerRevision {
+	// 查找相等/相同的ControllerRevision
 	var eq []*apps.ControllerRevision
 	for i := range revisions {
 		if EqualRevision(revisions[i], needle) {
