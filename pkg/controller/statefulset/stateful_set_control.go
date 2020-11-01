@@ -60,10 +60,14 @@ func NewDefaultStatefulSetControl(
 }
 
 type defaultStatefulSetControl struct {
-	podControl        StatefulPodControlInterface
-	statusUpdater     StatefulSetStatusUpdaterInterface
+	// 对pod进行  创建 删除 修改
+	podControl StatefulPodControlInterface
+	// 对stateful 进行更新操作
+	statusUpdater StatefulSetStatusUpdaterInterface
+	// 操作controllerrevision
 	controllerHistory history.Interface
-	recorder          record.EventRecorder
+	// 事件记录器
+	recorder record.EventRecorder
 }
 
 // UpdateStatefulSet executes the core logic loop for a stateful set, applying the predictable and
@@ -82,7 +86,7 @@ func (ssc *defaultStatefulSetControl) UpdateStatefulSet(set *apps.StatefulSet, p
 	}
 	// 根据创建时间进行排序
 	history.SortControllerRevisions(revisions)
-	// 执行更新操作 并获取相关当前版本和更新版本
+	// 执行更新操作 并获取当前版本和更新版本
 	currentRevision, updateRevision, err := ssc.performUpdate(set, pods, revisions)
 	if err != nil {
 		return utilerrors.NewAggregate([]error{err, ssc.truncateHistory(set, pods, revisions, currentRevision, updateRevision)})
@@ -104,6 +108,7 @@ func (ssc *defaultStatefulSetControl) performUpdate(
 	}
 
 	// perform the main update function and get the status
+	// 执行主要更新操作并且获取状态
 	status, err := ssc.updateStatefulSet(set, currentRevision, updateRevision, collisionCount, pods)
 	if err != nil {
 		return currentRevision, updateRevision, err
@@ -289,6 +294,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	collisionCount int32,
 	pods []*v1.Pod) (*apps.StatefulSetStatus, error) {
 	// get the current and update revisions of the set.
+	// 获取最新版本及更新版本(将controllerrevision.data转换为sts对象)
 	currentSet, err := ApplyRevision(set, currentRevision)
 	if err != nil {
 		return nil, err
@@ -350,6 +356,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	// for any empty indices in the sequence [0,set.Spec.Replicas) create a new Pod at the correct revision
 	for ord := 0; ord < replicaCount; ord++ {
 		if replicas[ord] == nil {
+			// 创建0号pod
 			replicas[ord] = newVersionedStatefulSetPod(
 				currentSet,
 				updateSet,
@@ -569,6 +576,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSetStatus(
 	status *apps.StatefulSetStatus) error {
 
 	// complete any in progress rolling update if necessary
+	// 计算滚动更新
 	completeRollingUpdate(set, status)
 
 	// if the status is not inconsistent do not perform an update
