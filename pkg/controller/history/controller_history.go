@@ -112,7 +112,7 @@ func SortControllerRevisions(revisions []*apps.ControllerRevision) {
 // EqualRevision returns true if lhs and rhs are either both nil, or both point to non-nil ControllerRevisions that
 // contain semantically equivalent data. Otherwise this method returns false.
 func EqualRevision(lhs *apps.ControllerRevision, rhs *apps.ControllerRevision) bool {
-	//
+	//比较lhs和rhs是否相等/相同
 	var lhsHash, rhsHash *uint32
 	if lhs == nil || rhs == nil {
 		return lhs == rhs
@@ -142,6 +142,8 @@ func EqualRevision(lhs *apps.ControllerRevision, rhs *apps.ControllerRevision) b
 func FindEqualRevisions(revisions []*apps.ControllerRevision, needle *apps.ControllerRevision) []*apps.ControllerRevision {
 	// 查找相等/相同的ControllerRevision
 	var eq []*apps.ControllerRevision
+	// 遍历所有的revisions，使用EqualRevision函数判断是否和needle相等 如果相等放入eq数组里
+	// 相等的条件sts.data/sts.label["controller.kubernetes.io/hash"]/
 	for i := range revisions {
 		if EqualRevision(revisions[i], needle) {
 			eq = append(eq, revisions[i])

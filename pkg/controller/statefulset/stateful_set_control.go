@@ -82,7 +82,7 @@ func (ssc *defaultStatefulSetControl) UpdateStatefulSet(set *apps.StatefulSet, p
 	}
 	// 根据创建时间进行排序
 	history.SortControllerRevisions(revisions)
-	// 执行更新操作 并获取相关current revision 和 update revision
+	// 执行更新操作 并获取相关当前版本和更新版本
 	currentRevision, updateRevision, err := ssc.performUpdate(set, pods, revisions)
 	if err != nil {
 		return utilerrors.NewAggregate([]error{err, ssc.truncateHistory(set, pods, revisions, currentRevision, updateRevision)})
@@ -97,7 +97,7 @@ func (ssc *defaultStatefulSetControl) performUpdate(
 	set *apps.StatefulSet, pods []*v1.Pod, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, error) {
 
 	// get the current, and update revisions
-	// 获取 current update revision，版本数量
+	// 获取当前版本,更新版本，及hash种子
 	currentRevision, updateRevision, collisionCount, err := ssc.getStatefulSetRevisions(set, revisions)
 	if err != nil {
 		return currentRevision, updateRevision, err
@@ -110,6 +110,7 @@ func (ssc *defaultStatefulSetControl) performUpdate(
 	}
 
 	// update the set's status
+	// 更新状态
 	err = ssc.updateStatefulSetStatus(set, status)
 	if err != nil {
 		return currentRevision, updateRevision, err
@@ -228,9 +229,11 @@ func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 	}
 
 	// find any equivalent revisions
+	// 查找和updateRevision相等的controllerrevisions
 	equalRevisions := history.FindEqualRevisions(revisions, updateRevision)
 	equalCount := len(equalRevisions)
-
+	// 根据不同条件来获取最终的updateRevision
+	// 如果equalCount>0代表有相等的 并且最后一个
 	if equalCount > 0 && history.EqualRevision(revisions[revisionCount-1], equalRevisions[equalCount-1]) {
 		// if the equivalent revision is immediately prior the update revision has not changed
 		updateRevision = revisions[revisionCount-1]
@@ -245,6 +248,7 @@ func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 		}
 	} else {
 		//if there is no equivalent revision we create a new one
+		// 如果没有相同的 那就创建最新的ControllerRevision
 		updateRevision, err = ssc.controllerHistory.CreateControllerRevision(set, updateRevision, &collisionCount)
 		if err != nil {
 			return nil, nil, collisionCount, err
@@ -252,6 +256,7 @@ func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 	}
 
 	// attempt to find the revision that corresponds to the current revision
+	// 遍历revisions，尝试查找和当前sts.status.currentRevision一致的revision修订号
 	for i := range revisions {
 		if revisions[i].Name == set.Status.CurrentRevision {
 			currentRevision = revisions[i]
@@ -260,6 +265,7 @@ func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 	}
 
 	// if the current revision is nil we initialize the history by setting it to the update revision
+	// 如果当前修订版本为空 则将其设置为更新版本来完成初始化历史记录
 	if currentRevision == nil {
 		currentRevision = updateRevision
 	}
