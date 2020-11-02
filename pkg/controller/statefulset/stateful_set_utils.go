@@ -102,6 +102,7 @@ func isMemberOf(set *apps.StatefulSet, pod *v1.Pod) bool {
 
 // identityMatches returns true if pod has a valid identity and network identity for a member of set.
 func identityMatches(set *apps.StatefulSet, pod *v1.Pod) bool {
+	// 身份匹配 匹配sts对象和pod信息是否一致
 	parent, ordinal := getParentNameAndOrdinal(pod)
 	return ordinal >= 0 &&
 		set.Name == parent &&

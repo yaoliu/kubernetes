@@ -55,8 +55,10 @@ type StatefulSetController struct {
 	kubeClient clientset.Interface
 	// control returns an interface capable of syncing a stateful set.
 	// Abstracted out for testing.
+	// 核心控制器 同步statefulset状态
 	control StatefulSetControlInterface
 	// podControl is used for patching pods.
+	// 对pod进行增删改查的接口
 	podControl controller.PodControlInterface
 	// podLister is able to list/get pods from a shared informer's store
 	// 用于获取pod元数据
@@ -67,12 +69,16 @@ type StatefulSetController struct {
 	// 用于获取 statefulSet 元数据
 	setLister appslisters.StatefulSetLister
 	// setListerSynced returns true if the stateful set shared informer has synced at least once
+	// 用于判断set是否同步到cache
 	setListerSynced cache.InformerSynced
 	// pvcListerSynced returns true if the pvc shared informer has synced at least once
+	// 用于判断pvc是否同步到cache
 	pvcListerSynced cache.InformerSynced
 	// revListerSynced returns true if the rev shared informer has synced at least once
+	// 用于判断rev是否同步到cache
 	revListerSynced cache.InformerSynced
 	// StatefulSets that need to be synced.
+	// 用于存放set数据 sync的时候从queue里get一个setKey进行操作
 	queue workqueue.RateLimitingInterface
 }
 
@@ -103,16 +109,19 @@ func NewStatefulSetController(
 				pvcInformer.Lister(),
 				recorder),
 			NewRealStatefulSetStatusUpdater(kubeClient, setInformer.Lister()),
+			// 操作controllerrevision接口
 			history.NewHistory(kubeClient, revInformer.Lister()),
 			recorder,
 		),
 		pvcListerSynced: pvcInformer.Informer().HasSynced,
-		queue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "statefulset"),
-		podControl:      controller.RealPodControl{KubeClient: kubeClient, Recorder: recorder},
+		// 初始化队列
+		queue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "statefulset"),
+		//
+		podControl: controller.RealPodControl{KubeClient: kubeClient, Recorder: recorder},
 
 		revListerSynced: revInformer.Informer().HasSynced,
 	}
-	// 监听watch pod add等事件 并且调用对应事件注册的函数
+	// 监听watch pod add/update/del等事件 并且调用对应事件注册的函数
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		// lookup the statefulset and enqueue
 		AddFunc: ssc.addPod,
@@ -123,7 +132,7 @@ func NewStatefulSetController(
 	})
 	ssc.podLister = podInformer.Lister()
 	ssc.podListerSynced = podInformer.Informer().HasSynced
-	// 监听watch sst add等事件 并且调用对应事件注册的函数
+	// 监听watch statefulSet add/update/del等事件 并且调用对应事件注册的函数
 	setInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: ssc.enqueueStatefulSet,
@@ -156,7 +165,7 @@ func (ssc *StatefulSetController) Run(workers int, stopCh <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync("stateful set", stopCh, ssc.podListerSynced, ssc.setListerSynced, ssc.pvcListerSynced, ssc.revListerSynced) {
 		return
 	}
-	// 开启workers数的gorutinue 每个gorutinue都调用ssc.worker
+	// 开启workers数的gorutinue 每个gorutinue都调用ssc.worker 并行处理
 	for i := 0; i < workers; i++ {
 		go wait.Until(ssc.worker, time.Second, stopCh)
 	}
@@ -390,13 +399,15 @@ func (ssc *StatefulSetController) enqueueStatefulSet(obj interface{}) {
 // processNextWorkItem dequeues items, processes them, and marks them done. It enforces that the syncHandler is never
 // invoked concurrently with the same key.
 func (ssc *StatefulSetController) processNextWorkItem() bool {
-	// 从queue队列获取一个ssKey ssKey的格式为{nameSpace}/{statefulSetName} 例如:default/nginx
+	// 从queue队列获取一个setKey ssKey的格式为{nameSpace}/{statefulSetName} 例如:default/web
 	key, quit := ssc.queue.Get()
 	if quit {
 		return false
 	}
+	// 用完需要告知队列
 	defer ssc.queue.Done(key)
 	if err := ssc.sync(key.(string)); err != nil {
+		// 如果sync失败 则重新加入队列
 		utilruntime.HandleError(fmt.Errorf("error syncing StatefulSet %v, requeuing: %v", key.(string), err))
 		ssc.queue.AddRateLimited(key)
 	} else {
@@ -440,12 +451,11 @@ func (ssc *StatefulSetController) sync(key string) error {
 		// This is a non-transient error, so don't retry.
 		return nil
 	}
-	// adopt收养/领养
-	// 孤儿的ControllerRevision进行匹配/解除关联
+	// adopt收养/领养孤儿的ControllerRevision进行匹配/解除关联
 	if err := ssc.adoptOrphanRevisions(set); err != nil {
 		return err
 	}
-	// 使用选择器进行匹配获取所有关联的Pod
+	// 使用选择器进行匹配所有关联Pod
 	pods, err := ssc.getPodsForStatefulSet(set, selector)
 	if err != nil {
 		return err
