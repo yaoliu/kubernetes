@@ -177,21 +177,26 @@ func (ssc *defaultStatefulSetControl) truncateHistory(
 	history := make([]*apps.ControllerRevision, 0, len(revisions))
 	// mark all live revisions
 	live := map[string]bool{}
+	// 将当前的修订版本加入live
 	if current != nil {
 		live[current.Name] = true
 	}
+	// 将更新的修订版本加入live
 	if update != nil {
 		live[update.Name] = true
 	}
+	// 遍历所有的pod 获取每个pod的revision 加入live
 	for i := range pods {
 		live[getPodRevision(pods[i])] = true
 	}
 	// collect live revisions and historic revisions
+	// 遍历所有revision 如果不再live里 则加入到history
 	for i := range revisions {
 		if !live[revisions[i].Name] {
 			history = append(history, revisions[i])
 		}
 	}
+	// 按照set.Spec.RevisionHistoryLimit进行删除多余的revision
 	historyLen := len(history)
 	historyLimit := int(*set.Spec.RevisionHistoryLimit)
 	if historyLen <= historyLimit {
@@ -265,7 +270,7 @@ func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 	}
 
 	// attempt to find the revision that corresponds to the current revision
-	// 遍历revisions，尝试查找和当前sts.status.currentRevision一致的revision修订号
+	// 获取当前修订版本(遍历revisions，尝试查找和当前sts.status.currentRevision一致的revision修订版本)
 	for i := range revisions {
 		if revisions[i].Name == set.Status.CurrentRevision {
 			currentRevision = revisions[i]
@@ -350,7 +355,8 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 				status.UpdatedReplicas++
 			}
 		}
-		//根据ord序号将pod划分到replicas and condemned中
+		// 根据ord序号将pod划分到replicas and condemned中
+		// 此处为了扩缩容
 		if ord := getOrdinal(pods[i]); 0 <= ord && ord < replicaCount {
 			// if the ordinal of the pod is within the range of the current number of replicas,
 			// insert it at the indirection of its ordinal
@@ -489,6 +495,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 		// We must ensure that all for each Pod, when we create it, all of its predecessors, with respect to its
 		// ordinal, are Running and Ready.
 		// 判断如果pod状态不是running && ready状态
+		// 按照statefulSet的定义 必须上一个pod status = running && ready 才能创建下一个
 		if !isRunningAndReady(replicas[i]) && monotonic {
 			klog.V(4).Infof(
 				"StatefulSet %s/%s is waiting for Pod %s to be Running and Ready",
@@ -566,6 +573,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	}
 
 	// we compute the minimum ordinal of the target sequence for a destructive update based on the strategy.
+	// 更新策略RollingUpdate
 	updateMin := 0
 	if set.Spec.UpdateStrategy.RollingUpdate != nil {
 		updateMin = int(*set.Spec.UpdateStrategy.RollingUpdate.Partition)
@@ -575,17 +583,20 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	for target := len(replicas) - 1; target >= updateMin; target-- {
 
 		// delete the Pod if it is not already terminating and does not match the update revision.
+		// 如果pod的revision和更新修订版本不一致并且该pod不处于被删除状态
 		if getPodRevision(replicas[target]) != updateRevision.Name && !isTerminating(replicas[target]) {
 			klog.V(2).Infof("StatefulSet %s/%s terminating Pod %s for update",
 				set.Namespace,
 				set.Name,
 				replicas[target].Name)
+			// 删除此pod
 			err := ssc.podControl.DeleteStatefulPod(set, replicas[target])
 			status.CurrentReplicas--
 			return &status, err
 		}
 
 		// wait for unhealthy Pods on update
+		// 等待不健康的pod更新
 		if !isHealthy(replicas[target]) {
 			klog.V(4).Infof(
 				"StatefulSet %s/%s is waiting for Pod %s to update",
