@@ -53,10 +53,15 @@ type StatefulPodControlInterface interface {
 }
 
 func NewRealStatefulPodControl(
+	// 用来访问api server的client
 	client clientset.Interface,
+	// 用来访问set元数据
 	setLister appslisters.StatefulSetLister,
+	// 用来访问pod元数据
 	podLister corelisters.PodLister,
+	// 用来访问pvc元数据
 	pvcLister corelisters.PersistentVolumeClaimLister,
+	// 事件记录器
 	recorder record.EventRecorder,
 ) StatefulPodControlInterface {
 	return &realStatefulPodControl{client, setLister, podLister, pvcLister, recorder}
@@ -65,26 +70,34 @@ func NewRealStatefulPodControl(
 // realStatefulPodControl implements StatefulPodControlInterface using a clientset.Interface to communicate with the
 // API server. The struct is package private as the internal details are irrelevant to importing packages.
 type realStatefulPodControl struct {
-	client    clientset.Interface
+	// 用来访问api server的client
+	client clientset.Interface
+	// 用来访问set元数据
 	setLister appslisters.StatefulSetLister
+	// 用来访问pod元数据
 	podLister corelisters.PodLister
+	// 用来访问pvc元数据
 	pvcLister corelisters.PersistentVolumeClaimLister
-	recorder  record.EventRecorder
+	// 事件记录器
+	recorder record.EventRecorder
 }
 
 func (spc *realStatefulPodControl) CreateStatefulPod(set *apps.StatefulSet, pod *v1.Pod) error {
 	// Create the Pod's PVCs prior to creating the Pod
 	// 创建pod所需要的pvc
 	if err := spc.createPersistentVolumeClaims(set, pod); err != nil {
+		// 记录事件
 		spc.recordPodEvent("create", set, pod, err)
 		return err
 	}
 	// If we created the PVCs attempt to create the Pod
+	// 如果pvc创建成功 则尝试创建pod
 	_, err := spc.client.CoreV1().Pods(set.Namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
 	// sink already exists errors
 	if apierrors.IsAlreadyExists(err) {
 		return err
 	}
+	// 记录事件
 	spc.recordPodEvent("create", set, pod, err)
 	return err
 }
@@ -182,13 +195,16 @@ func (spc *realStatefulPodControl) recordClaimEvent(verb string, set *apps.State
 func (spc *realStatefulPodControl) createPersistentVolumeClaims(set *apps.StatefulSet, pod *v1.Pod) error {
 	var errs []error
 	for _, claim := range getPersistentVolumeClaims(set, pod) {
+		//  获取pvc对象
 		_, err := spc.pvcLister.PersistentVolumeClaims(claim.Namespace).Get(claim.Name)
 		switch {
 		case apierrors.IsNotFound(err):
+			// 如果不存在 那就创建pvc对象
 			_, err := spc.client.CoreV1().PersistentVolumeClaims(claim.Namespace).Create(context.TODO(), &claim, metav1.CreateOptions{})
 			if err != nil {
 				errs = append(errs, fmt.Errorf("failed to create PVC %s: %s", claim.Name, err))
 			}
+			// 如果已经存在 则记录事件
 			if err == nil || !apierrors.IsAlreadyExists(err) {
 				spc.recordClaimEvent("create", set, pod, &claim, err)
 			}

@@ -137,7 +137,9 @@ func storageMatches(set *apps.StatefulSet, pod *v1.Pod) bool {
 // returned PersistentVolumeClaims are each constructed with a the name specific to the Pod. This name is determined
 // by getPersistentVolumeClaimName.
 func getPersistentVolumeClaims(set *apps.StatefulSet, pod *v1.Pod) map[string]v1.PersistentVolumeClaim {
+	// 获取pod ord序号
 	ordinal := getOrdinal(pod)
+	// 将set.spec.VolumeClaimTemplates转化为pvc对象
 	templates := set.Spec.VolumeClaimTemplates
 	claims := make(map[string]v1.PersistentVolumeClaim, len(templates))
 	for i := range templates {

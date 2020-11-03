@@ -96,7 +96,7 @@ type Controller struct {
 	podStore corelisters.PodLister
 
 	// Jobs that need to be updated
-	// 用于存放job数据 syncjob的时候从queue里get一个Jobkey进行操作
+	// 用于存放job数据 syncjob的时候从queue里get一个jobkey进行操作
 	queue workqueue.RateLimitingInterface
 	// 事件记录器 用于记录事件
 	recorder record.EventRecorder
