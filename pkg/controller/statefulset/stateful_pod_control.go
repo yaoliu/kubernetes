@@ -108,6 +108,7 @@ func (spc *realStatefulPodControl) UpdateStatefulPod(set *apps.StatefulSet, pod 
 		// assume the Pod is consistent
 		consistent := true
 		// if the Pod does not conform to its identity, update the identity and dirty the Pod
+		// 判断pod和sts身份
 		if !identityMatches(set, pod) {
 			updateIdentity(set, pod)
 			consistent = false

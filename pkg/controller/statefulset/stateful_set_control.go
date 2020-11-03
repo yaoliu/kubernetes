@@ -511,7 +511,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 		}
 		// Make a deep copy so we don't mutate the shared cache
 		replica := replicas[i].DeepCopy()
-		// 更新状态
+		// 更新pod状态
 		if err := ssc.podControl.UpdateStatefulPod(updateSet, replica); err != nil {
 			return &status, err
 		}
