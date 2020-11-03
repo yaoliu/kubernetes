@@ -551,7 +551,9 @@ func (rsc *ReplicaSetController) processNextWorkItem() bool {
 // It will requeue the replica set in case of an error while creating/deleting pods.
 func (rsc *ReplicaSetController) manageReplicas(filteredPods []*v1.Pod, rs *apps.ReplicaSet) error {
 	// 计算已经存在的pod和rs期望副本数的差异
-	// 当前active pod - rs的pod副本数 如果=0 代表正常 如果小于0 需要创建余下pod 如果大于0 需要删除pod
+	// 当前active pod - rs的pod副本数
+	// diff <0  pod太少，则需要创建更多pod
+	// diff > 0 pod太多，则需要删除部分pod
 	diff := len(filteredPods) - int(*(rs.Spec.Replicas))
 	// 根据rs对象获取rsKey
 	rsKey, err := controller.KeyFunc(rs)
@@ -559,11 +561,11 @@ func (rsc *ReplicaSetController) manageReplicas(filteredPods []*v1.Pod, rs *apps
 		utilruntime.HandleError(fmt.Errorf("couldn't get key for %v %#v: %v", rsc.Kind, rs, err))
 		return nil
 	}
-	// 需要创建diff个pod
+	// 需要创建更多pod
 	if diff < 0 {
 		// 变为正数
 		diff *= -1
-		// 如果diff大于上限
+		// 每次创建不能超过上限
 		if diff > rsc.burstReplicas {
 			diff = rsc.burstReplicas
 		}
