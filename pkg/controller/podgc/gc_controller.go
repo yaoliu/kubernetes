@@ -48,16 +48,21 @@ const (
 )
 
 type PodGCController struct {
+	// 用来访问api server的client
 	kubeClient clientset.Interface
-
-	podLister        corelisters.PodLister
-	podListerSynced  cache.InformerSynced
-	nodeLister       corelisters.NodeLister
+	// 提供获取pod数据的缓存层
+	podLister corelisters.PodLister
+	// 用来判断podLister是否已经同步(has synced)
+	podListerSynced cache.InformerSynced
+	// 提供获取node数据的缓存层
+	nodeLister corelisters.NodeLister
+	// 用来判断nodeLister是否已经同步(has synced)
 	nodeListerSynced cache.InformerSynced
 
 	nodeQueue workqueue.DelayingInterface
 	// 用来删除pod func
-	deletePod              func(namespace, name string) error
+	deletePod func(namespace, name string) error
+	//
 	terminatedPodThreshold int
 }
 
@@ -93,32 +98,38 @@ func (gcc *PodGCController) Run(stop <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync("GC", stop, gcc.podListerSynced, gcc.nodeListerSynced) {
 		return
 	}
-
+	// gcCheckPeriod 检测时间间隔 默认 20s
+	// 每20s检测一次
 	go wait.Until(gcc.gc, gcCheckPeriod, stop)
 
 	<-stop
 }
 
 func (gcc *PodGCController) gc() {
+	// 获取所有pod
 	pods, err := gcc.podLister.List(labels.Everything())
 	if err != nil {
 		klog.Errorf("Error while listing all pods: %v", err)
 		return
 	}
+	// 获取所有node
 	nodes, err := gcc.nodeLister.List(labels.Everything())
 	if err != nil {
 		klog.Errorf("Error while listing all nodes: %v", err)
 		return
 	}
+	// 回收已经终止的pod
 	if gcc.terminatedPodThreshold > 0 {
 		gcc.gcTerminated(pods)
 	}
+	// 回收孤儿pod
 	gcc.gcOrphaned(pods, nodes)
 	// 回收未调度并已经停止的pod
 	gcc.gcUnscheduledTerminating(pods)
 }
 
 func isPodTerminated(pod *v1.Pod) bool {
+	// 判断pod是否已经终止
 	if phase := pod.Status.Phase; phase != v1.PodPending && phase != v1.PodRunning && phase != v1.PodUnknown {
 		return true
 	}
@@ -126,6 +137,7 @@ func isPodTerminated(pod *v1.Pod) bool {
 }
 
 func (gcc *PodGCController) gcTerminated(pods []*v1.Pod) {
+	// 遍历所有pod 判断每个pod是否已经终止 如果已经终止则加入到terminatedPods数组里
 	terminatedPods := []*v1.Pod{}
 	for _, pod := range pods {
 		if isPodTerminated(pod) {
@@ -145,7 +157,9 @@ func (gcc *PodGCController) gcTerminated(pods []*v1.Pod) {
 
 	klog.Infof("garbage collecting %v pods", deleteCount)
 	// sort only when necessary
+	// 根据pod创建时间进行排序
 	sort.Sort(byCreationTimestamp(terminatedPods))
+	// 并行启动deleteCount个goruntine 调用deletePod函数删除pod
 	var wait sync.WaitGroup
 	for i := 0; i < deleteCount; i++ {
 		wait.Add(1)
