@@ -56,7 +56,7 @@ type PodGCController struct {
 	nodeListerSynced cache.InformerSynced
 
 	nodeQueue workqueue.DelayingInterface
-
+	// 用来删除pod func
 	deletePod              func(namespace, name string) error
 	terminatedPodThreshold int
 }
@@ -114,6 +114,7 @@ func (gcc *PodGCController) gc() {
 		gcc.gcTerminated(pods)
 	}
 	gcc.gcOrphaned(pods, nodes)
+	// 回收未调度并已经停止的pod
 	gcc.gcUnscheduledTerminating(pods)
 }
 
