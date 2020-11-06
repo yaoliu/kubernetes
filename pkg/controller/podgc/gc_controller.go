@@ -118,7 +118,7 @@ func (gcc *PodGCController) gc() {
 		klog.Errorf("Error while listing all nodes: %v", err)
 		return
 	}
-	// 回收已经终止的pod
+	// 回收已经终止的pod pod.status.pha
 	if gcc.terminatedPodThreshold > 0 {
 		gcc.gcTerminated(pods)
 	}
@@ -177,6 +177,7 @@ func (gcc *PodGCController) gcTerminated(pods []*v1.Pod) {
 // gcOrphaned deletes pods that are bound to nodes that don't exist.
 func (gcc *PodGCController) gcOrphaned(pods []*v1.Pod, nodes []*v1.Node) {
 	klog.V(4).Infof("GC'ing orphaned")
+	// node进行去重加入existingNodeNames
 	existingNodeNames := sets.NewString()
 	for _, node := range nodes {
 		existingNodeNames.Insert(node.Name)
@@ -240,7 +241,7 @@ func (gcc *PodGCController) checkIfNodeExists(name string) (bool, error) {
 // gcUnscheduledTerminating deletes pods that are terminating and haven't been scheduled to a particular node.
 func (gcc *PodGCController) gcUnscheduledTerminating(pods []*v1.Pod) {
 	klog.V(4).Infof("GC'ing unscheduled pods which are terminating.")
-
+	// 遍历所有pod 删除未调度及以终止的pod
 	for _, pod := range pods {
 		if pod.DeletionTimestamp == nil || len(pod.Spec.NodeName) > 0 {
 			continue
