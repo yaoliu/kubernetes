@@ -93,7 +93,7 @@ func NewGarbageCollector(
 		attemptToOrphan:  attemptToOrphan,
 		absentOwnerCache: absentOwnerCache,
 	}
-	// 初始化GraphBuilder GraphBuilder 会用infomers来监听所有事件的变动 并把这些事件转换为event对象加入队列中 并对事件进行分类 添加到不同到队列里
+	// 初始化GraphBuilder GraphBuilder 会使用infomers来监听所有事件的变动 并把这些事件转换为event对象加入队列中 并对事件进行分类 添加到不同到队列里
 	gc.dependencyGraphBuilder = &GraphBuilder{
 		metadataClient:   metadataClient,
 		informersStarted: informersStarted,
@@ -660,7 +660,7 @@ func (gc *GarbageCollector) GraphHasUID(u types.UID) bool {
 // GetDeletableResources will log and return any discovered resources it was
 // able to process (which may be none).
 func GetDeletableResources(discoveryClient discovery.ServerResourcesInterface) map[schema.GroupVersionResource]struct{} {
-	// 获取可删除的资源 通过discovery 获取所有资源
+	// 获取可删除的资源 通过 client-go discovery包获取所有资源
 	preferredResources, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
 		if discovery.IsGroupDiscoveryFailedError(err) {

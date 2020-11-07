@@ -95,6 +95,7 @@ type GraphBuilder struct {
 	graphChanges workqueue.RateLimitingInterface
 	// uidToNode doesn't require a lock to protect, because only the
 	// single-threaded GraphBuilder.processGraphChanges() reads/writes it.
+	//
 	uidToNode *concurrentUIDToNode
 	// GraphBuilder is the producer of attemptToDelete and attemptToOrphan, GC is the consumer.
 	attemptToDelete workqueue.RateLimitingInterface
@@ -126,7 +127,7 @@ func (m *monitor) Run() {
 type monitors map[schema.GroupVersionResource]*monitor
 
 func (gb *GraphBuilder) controllerFor(resource schema.GroupVersionResource, kind schema.GroupVersionKind) (cache.Controller, cache.Store, error) {
-	// 为每个resource5  注册 AddFunc，UpdateFunc，DeleteFunc 监听相关资源的变动 并添加到graphChanges队列中
+	// 为每个resource  注册 AddFunc，UpdateFunc，DeleteFunc 监听相关资源的变动 为每个资源创建event对象 并添加到graphChanges队列中
 	handlers := cache.ResourceEventHandlerFuncs{
 		// add the event to the dependencyGraphBuilder's graphChanges.
 		AddFunc: func(obj interface{}) {
@@ -193,7 +194,7 @@ func (gb *GraphBuilder) syncMonitors(resources map[schema.GroupVersionResource]s
 	added := 0
 	// 遍历所有资源
 	for resource := range resources {
-		// 如果资源在忽略资源里 那么要continue 表示此资源不监听
+		// 如果资源在忽略资源里 要continue 表示此资源不监听
 		if _, ok := gb.ignoredResources[resource.GroupResource()]; ok {
 			continue
 		}
@@ -554,7 +555,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 		return true
 	}
 	obj := event.obj
-	// 获取metadata对象
+	// 获取Accessor对象
 	accessor, err := meta.Accessor(obj)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("cannot access obj: %v", err))
@@ -571,9 +572,9 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 		existingNode.markObserved()
 	}
 	switch {
-	// 判断 event 类型是add 或者 update 以及node对象不存在的时
+	// 判断 event 类型是add 或者 update 以及node对象不存在
 	case (event.eventType == addEvent || event.eventType == updateEvent) && !found:
-		// 初始化node
+		// 创建node
 		newNode := &node{
 			identity: objectReference{
 				OwnerReference: metav1.OwnerReference{
