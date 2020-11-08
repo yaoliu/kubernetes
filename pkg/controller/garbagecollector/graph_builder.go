@@ -95,7 +95,7 @@ type GraphBuilder struct {
 	graphChanges workqueue.RateLimitingInterface
 	// uidToNode doesn't require a lock to protect, because only the
 	// single-threaded GraphBuilder.processGraphChanges() reads/writes it.
-	//
+	// uid为每一个metadata.uid node为资源的抽象
 	uidToNode *concurrentUIDToNode
 	// GraphBuilder is the producer of attemptToDelete and attemptToOrphan, GC is the consumer.
 	attemptToDelete workqueue.RateLimitingInterface
@@ -247,7 +247,7 @@ func (gb *GraphBuilder) startMonitors() {
 
 	// we're waiting until after the informer start that happens once all the controllers are initialized.  This ensures
 	// that they don't get unexpected events on their work queues.
-	// 等待infomers
+	// 等待infomers 使用channel进行阻塞
 	<-gb.informersStarted
 
 	monitors := gb.monitors
@@ -302,7 +302,7 @@ func (gb *GraphBuilder) Run(stopCh <-chan struct{}) {
 	// closed.
 	// 启动 monitor
 	gb.startMonitors()
-	// 调用gb.runProcessGraphChanges 处理队列中的数据 当收到stopCh会停止 并且执行下面的操作
+	// 调用gb.runProcessGraphChanges 处理GraphChanges队列中的数据 当收到stopCh会停止 并且执行下面的操作
 	wait.Until(gb.runProcessGraphChanges, 1*time.Second, stopCh)
 
 	// Stop any running monitors.
@@ -352,7 +352,7 @@ func (gb *GraphBuilder) enqueueVirtualDeleteEvent(ref objectReference) {
 // attemptToDeleteItem() will verify if the owner exists according to the API server.
 func (gb *GraphBuilder) addDependentToOwners(n *node, owners []metav1.OwnerReference) {
 	for _, owner := range owners {
-		// 获取所属者对象
+		// 获取属主对象
 		ownerNode, ok := gb.uidToNode.Read(owner.UID)
 		// 如果不存在
 		if !ok {
@@ -440,6 +440,7 @@ func referencesDiffs(old []metav1.OwnerReference, new []metav1.OwnerReference) (
 
 func deletionStartsWithFinalizer(oldObj interface{}, newAccessor metav1.Object, matchingFinalizer string) bool {
 	// if the new object isn't being deleted, or doesn't have the finalizer we're interested in, return false
+	// 是否处于删除状态
 	if !beingDeleted(newAccessor) || !hasFinalizer(newAccessor, matchingFinalizer) {
 		return false
 	}
@@ -563,16 +564,17 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 	}
 	klog.V(5).Infof("GraphBuilder process object: %s/%s, namespace %s, name %s, uid %s, event type %v", event.gvk.GroupVersion().String(), event.gvk.Kind, accessor.GetNamespace(), accessor.GetName(), string(accessor.GetUID()), event.eventType)
 	// Check if the node already exists
-	//  检查是否已经存在node对象
+	//  检查是否已经存在于uidToNode中
 	existingNode, found := gb.uidToNode.Read(accessor.GetUID())
 	if found {
 		// this marks the node as having been observed via an informer event
 		// 1. this depends on graphChanges only containing add/update events from the actual informer
 		// 2. this allows things tracking virtual nodes' existence to stop polling and rely on informer events
+		// 如果存在 标记一下
 		existingNode.markObserved()
 	}
 	switch {
-	// 判断 event 类型是add 或者 update 以及node对象不存在
+	// 判断 event 类型是add 或者 update 并且 node对象不存在
 	case (event.eventType == addEvent || event.eventType == updateEvent) && !found:
 		// 创建node
 		newNode := &node{
@@ -594,8 +596,10 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 		gb.insertNode(newNode)
 		// the underlying delta_fifo may combine a creation and a deletion into
 		// one event, so we need to further process the event.
+		// 判断event对象状态及采用哪种删除模式进行删除
 		gb.processTransitions(event.oldObj, accessor, newNode)
 	case (event.eventType == addEvent || event.eventType == updateEvent) && found:
+		// 判断 event 类型是add 或者 update 并且 node对象存在
 		// handle changes in ownerReferences
 		added, removed, changed := referencesDiffs(existingNode.owners, accessor.GetOwnerReferences())
 		if len(added) != 0 || len(removed) != 0 || len(changed) != 0 {

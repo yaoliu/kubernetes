@@ -308,7 +308,7 @@ func (gc *GarbageCollector) attemptToDeleteWorker() bool {
 		utilruntime.HandleError(fmt.Errorf("expect *node, got %#v", item))
 		return true
 	}
-	// 进行删除操作
+	// 尝试进行真正的删除操作
 	err := gc.attemptToDeleteItem(n)
 	if err != nil {
 		if _, ok := err.(*restMappingError); ok {
@@ -324,14 +324,14 @@ func (gc *GarbageCollector) attemptToDeleteWorker() bool {
 			utilruntime.HandleError(fmt.Errorf("error syncing item %s: %v", n, err))
 		}
 		// retry if garbage collection of an object failed.
-		// 重新放入队列中 等待下次重试
+		// 如果删除失败 则重新放入队列中 等待下次重试
 		gc.attemptToDelete.AddRateLimited(item)
 	} else if !n.isObserved() {
 		// requeue if item hasn't been observed via an informer event yet.
 		// otherwise a virtual node for an item added AND removed during watch reestablishment can get stuck in the graph and never removed.
 		// see https://issue.k8s.io/56121
 		klog.V(5).Infof("item %s hasn't been observed via informer yet", n.identity)
-		// 重新放入队列中 等待下次重试
+		// 如果删除失败 则重新放入队列中 等待下次重试
 		gc.attemptToDelete.AddRateLimited(item)
 	}
 	return true
@@ -430,11 +430,11 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 	// TODO: It's only necessary to talk to the API server if this is a
 	// "virtual" node. The local graph could lag behind the real status, but in
 	// practice, the difference is small.
-	// 使用client 访问api server 获取该node的最新状态
+	// 访问api server 获取该node的最新状态
 	latest, err := gc.getObject(item.identity)
 	switch {
 	case errors.IsNotFound(err):
-		// 如果api server不存在此node 那么此node 为virtual node
+		// 如果api server不存在此node 那么此node 为v irtual node
 		// the GraphBuilder can add "virtual" node for an owner that doesn't
 		// exist yet, so we need to enqueue a virtual Delete event to remove
 		// the virtual node from GraphBuilder.uidToNode.
