@@ -147,6 +147,7 @@ func (gc *GarbageCollector) Run(workers int, stopCh <-chan struct{}) {
 	// 启动 workers
 	for i := 0; i < workers; i++ {
 		go wait.Until(gc.runAttemptToDeleteWorker, 1*time.Second, stopCh)
+		// 对孤儿对象(Orphan)的node进行处理
 		go wait.Until(gc.runAttemptToOrphanWorker, 1*time.Second, stopCh)
 	}
 
@@ -434,7 +435,7 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 	latest, err := gc.getObject(item.identity)
 	switch {
 	case errors.IsNotFound(err):
-		// 如果api server不存在此node 那么此node 为v irtual node
+		// 如果api server不存在此node 那么此node 为virtual node
 		// the GraphBuilder can add "virtual" node for an owner that doesn't
 		// exist yet, so we need to enqueue a virtual Delete event to remove
 		// the virtual node from GraphBuilder.uidToNode.
@@ -448,7 +449,7 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 	case err != nil:
 		return err
 	}
-	// 判断最新的UID 和缓存中的UID是否一致
+	// 判断最新的UID和缓存中的UID是否相等
 	if latest.GetUID() != item.identity.UID {
 		klog.V(5).Infof("UID doesn't match, item %v not found, generating a virtual delete event", item.identity)
 		// 重新添加到graphChanges队列 等待下次删除
@@ -467,12 +468,13 @@ func (gc *GarbageCollector) attemptToDeleteItem(item *node) error {
 	}
 
 	// compute if we should delete the item
+	// 检查node是否还存在ownerReferences(属主)
 	ownerReferences := latest.GetOwnerReferences()
 	if len(ownerReferences) == 0 {
 		klog.V(2).Infof("object %s's doesn't have an owner, continue on next item", item.identity)
 		return nil
 	}
-
+	// 根据ownerReferences对node进行分类
 	solid, dangling, waitingForDependentsDeletion, err := gc.classifyReferences(item, ownerReferences)
 	if err != nil {
 		return err
