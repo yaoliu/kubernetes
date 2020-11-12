@@ -63,9 +63,12 @@ type GarbageCollector struct {
 	// 用来访问 apiserver 的client 主要对metadata进行操作
 	metadataClient metadata.Interface
 	// garbage collector attempts to delete the items in attemptToDelete queue when the time is ripe.
+	// 不同的联级删除模式放入不同的workqueue
 	attemptToDelete workqueue.RateLimitingInterface
 	// garbage collector attempts to orphan the dependents of the items in the attemptToOrphan queue, then deletes the items.
-	attemptToOrphan        workqueue.RateLimitingInterface
+	// 此队列存放孤儿对象
+	attemptToOrphan workqueue.RateLimitingInterface
+	// DAG 对不同对资源对象进行分类 根据删除模式加入到对应的  workqueue
 	dependencyGraphBuilder *GraphBuilder
 	// GC caches the owners that do not exist according to the API server.
 	absentOwnerCache *UIDCache

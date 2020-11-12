@@ -75,10 +75,12 @@ type GraphBuilder struct {
 
 	// each monitor list/watches a resource, the results are funneled to the
 	// dependencyGraphBuilder
+	// 所有资源的infomers都抽象为monitor
 	monitors    monitors
 	monitorLock sync.RWMutex
 	// informersStarted is closed after after all of the controllers have been initialized and are running.
 	// After that it is safe to start them here, before that it is not.
+	// 所有资源infomes都开启
 	informersStarted <-chan struct{}
 
 	// stopCh drives shutdown. When a receive from it unblocks, monitors will shut down.
@@ -92,13 +94,17 @@ type GraphBuilder struct {
 	metadataClient metadata.Interface
 	// monitors are the producer of the graphChanges queue, graphBuilder alters
 	// the in-memory graph according to the changes.
+	// monitors使用infomers进行对资源的watch 根据注册的evnet把watch到的数据抽象为node对象 加入到graphChanges中
+	// monitors为生产者
 	graphChanges workqueue.RateLimitingInterface
 	// uidToNode doesn't require a lock to protect, because only the
 	// single-threaded GraphBuilder.processGraphChanges() reads/writes it.
 	// uid为每一个metadata.uid node为资源的抽象
 	uidToNode *concurrentUIDToNode
 	// GraphBuilder is the producer of attemptToDelete and attemptToOrphan, GC is the consumer.
+	// GraphBuilder作为生产者 将资源进行分类放入attemptToDelete队列和attemptToOrphan队列中
 	attemptToDelete workqueue.RateLimitingInterface
+	// 孤儿对象
 	attemptToOrphan workqueue.RateLimitingInterface
 	// GraphBuilder and GC share the absentOwnerCache. Objects that are known to
 	// be non-existent are added to the cached.
@@ -127,7 +133,8 @@ func (m *monitor) Run() {
 type monitors map[schema.GroupVersionResource]*monitor
 
 func (gb *GraphBuilder) controllerFor(resource schema.GroupVersionResource, kind schema.GroupVersionKind) (cache.Controller, cache.Store, error) {
-	// 为每个resource  注册 AddFunc，UpdateFunc，DeleteFunc 监听相关资源的变动 为每个资源创建event对象 并添加到graphChanges队列中
+	// 为每个resource 注册 AddFunc，UpdateFunc，DeleteFunc 监听相关资源的变动
+	// 为每个资源创建event对象 并添加到graphChanges队列中
 	handlers := cache.ResourceEventHandlerFuncs{
 		// add the event to the dependencyGraphBuilder's graphChanges.
 		AddFunc: func(obj interface{}) {
