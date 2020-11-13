@@ -70,12 +70,13 @@ type event struct {
 // GraphBuilder processes events supplied by the informers, updates uidToNode,
 // a graph that caches the dependencies as we know, and enqueues
 // items to the attemptToDelete and attemptToOrphan.
+// 垃圾处理器
 type GraphBuilder struct {
 	restMapper meta.RESTMapper
 
 	// each monitor list/watches a resource, the results are funneled to the
 	// dependencyGraphBuilder
-	// 所有资源的infomers都抽象为monitor
+	// 所有资源的infomers都抽象为monitor monitor作为扫描器 检测所有资源 并根据event handler 将资源添加到`脏队列里`
 	monitors    monitors
 	monitorLock sync.RWMutex
 	// informersStarted is closed after after all of the controllers have been initialized and are running.
@@ -217,7 +218,7 @@ func (gb *GraphBuilder) syncMonitors(resources map[schema.GroupVersionResource]s
 			errs = append(errs, fmt.Errorf("couldn't look up resource %q: %v", resource, err))
 			continue
 		}
-		// 为 resource 注册 event handler 并获取controller 和 store
+		// 为 resource 注册 event handler 并获取 infomers controller 和 store
 		c, s, err := gb.controllerFor(resource, kind)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("couldn't start monitor for resource %q: %v", resource, err))
@@ -309,7 +310,7 @@ func (gb *GraphBuilder) Run(stopCh <-chan struct{}) {
 	// closed.
 	// 启动 monitor
 	gb.startMonitors()
-	// 调用gb.runProcessGraphChanges 处理GraphChanges队列中的数据 当收到stopCh会停止 并且执行下面的操作
+	// 调用gb.runProcessGraphChanges 处理GraphChanges脏队列中的数据 当收到stopCh会停止 并且执行下面的操作
 	wait.Until(gb.runProcessGraphChanges, 1*time.Second, stopCh)
 
 	// Stop any running monitors.
@@ -447,7 +448,7 @@ func referencesDiffs(old []metav1.OwnerReference, new []metav1.OwnerReference) (
 
 func deletionStartsWithFinalizer(oldObj interface{}, newAccessor metav1.Object, matchingFinalizer string) bool {
 	// if the new object isn't being deleted, or doesn't have the finalizer we're interested in, return false
-	// 是否处于删除状态
+	// 判断如果处于删除状态或者metadata.Finalizers是不能匹配matchingFinalizer字段
 	if !beingDeleted(newAccessor) || !hasFinalizer(newAccessor, matchingFinalizer) {
 		return false
 	}
@@ -456,11 +457,13 @@ func deletionStartsWithFinalizer(oldObj interface{}, newAccessor metav1.Object, 
 	if oldObj == nil {
 		return true
 	}
+	// 获取metadata对象
 	oldAccessor, err := meta.Accessor(oldObj)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("cannot access oldObj: %v", err))
 		return false
 	}
+	// 判断如果处于删除状态或者metadata.Finalizers是不能匹配matchingFinalizer字段
 	return !beingDeleted(oldAccessor) || !hasFinalizer(oldAccessor, matchingFinalizer)
 }
 
@@ -526,6 +529,7 @@ func (gb *GraphBuilder) addUnblockedOwnersToDeleteQueue(removed []metav1.OwnerRe
 }
 
 func (gb *GraphBuilder) processTransitions(oldObj interface{}, newAccessor metav1.Object, n *node) {
+	// 是否为孤立对象
 	if startsWaitingForDependentsOrphaned(oldObj, newAccessor) {
 		klog.V(5).Infof("add %s to the attemptToOrphan", n.identity)
 		gb.attemptToOrphan.Add(n)
@@ -543,6 +547,7 @@ func (gb *GraphBuilder) processTransitions(oldObj interface{}, newAccessor metav
 }
 
 func (gb *GraphBuilder) runProcessGraphChanges() {
+	// 不同循环 处理队列中的数据
 	for gb.processGraphChanges() {
 	}
 }
@@ -608,6 +613,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 	case (event.eventType == addEvent || event.eventType == updateEvent) && found:
 		// 判断 event 类型是add 或者 update 并且 node对象存在
 		// handle changes in ownerReferences
+		// 比对属组
 		added, removed, changed := referencesDiffs(existingNode.owners, accessor.GetOwnerReferences())
 		if len(added) != 0 || len(removed) != 0 || len(changed) != 0 {
 			// check if the changed dependency graph unblock owners that are
