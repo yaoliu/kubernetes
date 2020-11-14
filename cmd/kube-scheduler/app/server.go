@@ -185,9 +185,10 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 	}
 
 	// Start all informers.
+	// 启动所有infomers
 	go cc.PodInformer.Informer().Run(ctx.Done())
 	cc.InformerFactory.Start(ctx.Done())
-
+	// 等待所有cache同步完成
 	// Wait for all caches to sync before scheduling.
 	cc.InformerFactory.WaitForCacheSync(ctx.Done())
 
@@ -314,6 +315,7 @@ func Setup(ctx context.Context, opts *options.Options, outOfTreeRegistryOptions 
 
 	recorderFactory := getRecorderFactory(&cc)
 	// Create the scheduler.
+	// 创建调度器
 	sched, err := scheduler.New(cc.Client,
 		cc.InformerFactory,
 		cc.PodInformer,

@@ -208,7 +208,7 @@ func New(client clientset.Interface,
 	}
 
 	snapshot := internalcache.NewEmptySnapshot()
-
+	// 创建 scheduler 配置文件
 	configurator := &Configurator{
 		client:                   client,
 		recorderFactory:          recorderFactory,
@@ -432,6 +432,7 @@ func (sched *Scheduler) finishBinding(prof *profile.Profile, assumed *v1.Pod, ta
 
 // scheduleOne does the entire scheduling workflow for a single pod.  It is serialized on the scheduling algorithm's host fitting.
 func (sched *Scheduler) scheduleOne(ctx context.Context) {
+	// 获取一个pod
 	podInfo := sched.NextPod()
 	// pod could be nil when schedulerQueue is closed
 	if podInfo == nil || podInfo.Pod == nil {
@@ -626,6 +627,7 @@ func (sched *Scheduler) profileForPod(pod *v1.Pod) (*profile.Profile, error) {
 // skipPodSchedule returns true if we could skip scheduling the pod for specified cases.
 func (sched *Scheduler) skipPodSchedule(prof *profile.Profile, pod *v1.Pod) bool {
 	// Case 1: pod is being deleted.
+	// pod处于删除中
 	if pod.DeletionTimestamp != nil {
 		prof.Recorder.Eventf(pod, nil, v1.EventTypeWarning, "FailedScheduling", "Scheduling", "skip schedule deleting pod: %v/%v", pod.Namespace, pod.Name)
 		klog.V(3).Infof("Skip schedule deleting pod: %v/%v", pod.Namespace, pod.Name)
