@@ -118,11 +118,13 @@ func NewHorizontalController(
 	delayOfInitialReadinessStatus time.Duration,
 
 ) *HorizontalController {
+	// 创建事件管理器
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartStructuredLogging(0)
 	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: evtNamespacer.Events("")})
+	// 创建事件收集器
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "horizontal-pod-autoscaler"})
-
+	// 初始化hpa controller
 	hpaController := &HorizontalController{
 		eventRecorder:                recorder,
 		scaleNamespacer:              scaleNamespacer,
@@ -134,7 +136,7 @@ func NewHorizontalController(
 		scaleUpEvents:                map[string][]timestampedScaleEvent{},
 		scaleDownEvents:              map[string][]timestampedScaleEvent{},
 	}
-
+	// 监听watch hpa add/update/delete等事件 并且调用对应事件注册的函数
 	hpaInformer.Informer().AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    hpaController.enqueueHPA,

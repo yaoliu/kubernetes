@@ -38,12 +38,12 @@ func startHPAController(ctx ControllerContext) (http.Handler, bool, error) {
 	if !ctx.AvailableResources[schema.GroupVersionResource{Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"}] {
 		return nil, false, nil
 	}
-
+	// 新版本可以使用自定义metric 如果开启了这项 那么使用startHPAControllerWithRESTClient
 	if ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerUseRESTClients {
 		// use the new-style clients if support for custom metrics is enabled
 		return startHPAControllerWithRESTClient(ctx)
 	}
-
+	// 老版本
 	return startHPAControllerWithLegacyClient(ctx)
 }
 
@@ -68,7 +68,9 @@ func startHPAControllerWithRESTClient(ctx ControllerContext) (http.Handler, bool
 }
 
 func startHPAControllerWithLegacyClient(ctx ControllerContext) (http.Handler, bool, error) {
+	// 访问apiserver的client
 	hpaClient := ctx.ClientBuilder.ClientOrDie("horizontal-pod-autoscaler")
+	// 访问heapster server的client
 	metricsClient := metrics.NewHeapsterMetricsClient(
 		hpaClient,
 		metrics.DefaultHeapsterNamespace,
