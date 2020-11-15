@@ -124,7 +124,7 @@ func NewHorizontalController(
 	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: evtNamespacer.Events("")})
 	// 创建事件收集器
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "horizontal-pod-autoscaler"})
-	// 初始化hpa controller
+	// 初始化 hpa controller
 	hpaController := &HorizontalController{
 		eventRecorder:                recorder,
 		scaleNamespacer:              scaleNamespacer,
@@ -145,12 +145,13 @@ func NewHorizontalController(
 		},
 		resyncPeriod,
 	)
+	// 用来获取hpa对象
 	hpaController.hpaLister = hpaInformer.Lister()
 	hpaController.hpaListerSynced = hpaInformer.Informer().HasSynced
-
+	// 用来获取pod对象
 	hpaController.podLister = podInformer.Lister()
 	hpaController.podListerSynced = podInformer.Informer().HasSynced
-
+	// 初始化副本计算器
 	replicaCalc := NewReplicaCalculator(
 		metricsClient,
 		hpaController.podLister,
@@ -350,7 +351,7 @@ func (a *HorizontalController) reconcileKey(key string) (deleted bool, err error
 	if err != nil {
 		return true, err
 	}
-
+	// 获取hpa对象
 	hpa, err := a.hpaLister.HorizontalPodAutoscalers(namespace).Get(name)
 	if errors.IsNotFound(err) {
 		klog.Infof("Horizontal Pod Autoscaler %s has been deleted in %s", name, namespace)
