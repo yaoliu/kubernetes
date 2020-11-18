@@ -72,11 +72,14 @@ type timestampedScaleEvent struct {
 // in the system with the actual deployments/replication controllers they
 // control.
 type HorizontalController struct {
+	// 用于对scale的操作 Get/Update接口
 	scaleNamespacer scaleclient.ScalesGetter
-	hpaNamespacer   autoscalingclient.HorizontalPodAutoscalersGetter
-	mapper          apimeta.RESTMapper
-
-	replicaCalc   *ReplicaCalculator
+	// 用于对hpa的一系列操作
+	hpaNamespacer autoscalingclient.HorizontalPodAutoscalersGetter
+	mapper        apimeta.RESTMapper
+	// 副本计算器 根据metirc指标数据来计算出需要的副本数
+	replicaCalc *ReplicaCalculator
+	// 事件收集器
 	eventRecorder record.EventRecorder
 
 	downscaleStabilisationWindow time.Duration
@@ -92,6 +95,7 @@ type HorizontalController struct {
 	podListerSynced cache.InformerSynced
 
 	// Controllers that need to be synced
+	// 用于存放hpa数据 worker的时候从queue里get一个hpakey进行操作
 	queue workqueue.RateLimitingInterface
 
 	// Latest unstabilized recommendations for each autoscaler.
@@ -219,6 +223,7 @@ func (a *HorizontalController) worker() {
 }
 
 func (a *HorizontalController) processNextWorkItem() bool {
+	// 从queue队列获取一个hpaKey hpaKey的格式为{nameSpace}/{hpaName} 例如:default/hpa-apache
 	key, quit := a.queue.Get()
 	if quit {
 		return false
@@ -248,6 +253,7 @@ func (a *HorizontalController) processNextWorkItem() bool {
 // computeReplicasForMetrics computes the desired number of replicas for the metric specifications listed in the HPA,
 // returning the maximum  of the computed replica counts, a description of the associated metric, and the statuses of
 // all metrics computed.
+// computeReplicasForMetrics 用来计算期望副本数 根据metric指标信息进行计算 返回最大的副本数
 func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.HorizontalPodAutoscaler, scale *autoscalingv1.Scale,
 	metricSpecs []autoscalingv2.MetricSpec) (replicas int32, metric string, statuses []autoscalingv2.MetricStatus, timestamp time.Time, err error) {
 
@@ -257,7 +263,7 @@ func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.Hori
 		setCondition(hpa, autoscalingv2.ScalingActive, v1.ConditionFalse, "InvalidSelector", "the HPA target's scale is missing a selector")
 		return 0, "", nil, time.Time{}, fmt.Errorf(errMsg)
 	}
-
+	// 创建选择器
 	selector, err := labels.Parse(scale.Status.Selector)
 	if err != nil {
 		errMsg := fmt.Sprintf("couldn't convert selector into a corresponding internal selector object: %v", err)
@@ -284,6 +290,7 @@ func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.Hori
 			}
 			invalidMetricsCount++
 		}
+		//
 		if err == nil && (replicas == 0 || replicaCountProposal > replicas) {
 			timestamp = timestampProposal
 			replicas = replicaCountProposal
@@ -305,7 +312,7 @@ func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.Hori
 func (a *HorizontalController) computeReplicasForMetric(hpa *autoscalingv2.HorizontalPodAutoscaler, spec autoscalingv2.MetricSpec,
 	specReplicas, statusReplicas int32, selector labels.Selector, status *autoscalingv2.MetricStatus) (replicaCountProposal int32, metricNameProposal string,
 	timestampProposal time.Time, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
-
+	//根据hpa.spec.metrics[0].type
 	switch spec.Type {
 	case autoscalingv2.ObjectMetricSourceType:
 		metricSelector, err := metav1.LabelSelectorAsSelector(spec.Object.Metric.Selector)
@@ -347,11 +354,12 @@ func (a *HorizontalController) computeReplicasForMetric(hpa *autoscalingv2.Horiz
 }
 
 func (a *HorizontalController) reconcileKey(key string) (deleted bool, err error) {
+	// 将key切分为namespace和name 例如:defalut/hpa-apache 切分为default和hpa-apache hpa-apache为hpaName default为namespace
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return true, err
 	}
-	// 获取hpa对象
+	// 根据namespace/name获取hpa对象
 	hpa, err := a.hpaLister.HorizontalPodAutoscalers(namespace).Get(name)
 	if errors.IsNotFound(err) {
 		klog.Infof("Horizontal Pod Autoscaler %s has been deleted in %s", name, namespace)
@@ -440,6 +448,7 @@ func (a *HorizontalController) computeStatusForPodsMetric(currentReplicas int32,
 
 // computeStatusForResourceMetric computes the desired number of replicas for the specified metric of type ResourceMetricSourceType.
 func (a *HorizontalController) computeStatusForResourceMetric(currentReplicas int32, metricSpec autoscalingv2.MetricSpec, hpa *autoscalingv2.HorizontalPodAutoscaler, selector labels.Selector, status *autoscalingv2.MetricStatus) (replicaCountProposal int32, timestampProposal time.Time, metricNameProposal string, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
+	// 根据平均值计算副本数
 	if metricSpec.Resource.Target.AverageValue != nil {
 		var rawProposal int64
 		replicaCountProposal, rawProposal, timestampProposal, err := a.replicaCalc.GetRawResourceReplicas(currentReplicas, metricSpec.Resource.Target.AverageValue.MilliValue(), metricSpec.Resource.Name, hpa.Namespace, selector)
@@ -459,6 +468,7 @@ func (a *HorizontalController) computeStatusForResourceMetric(currentReplicas in
 		}
 		return replicaCountProposal, timestampProposal, metricNameProposal, autoscalingv2.HorizontalPodAutoscalerCondition{}, nil
 	}
+	// 根据平均使用率计算副本数
 	if metricSpec.Resource.Target.AverageUtilization == nil {
 		errMsg := "invalid resource metric source: neither a utilization target nor a value target was set"
 		err = fmt.Errorf(errMsg)
@@ -543,6 +553,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 	// make a copy so that we never mutate the shared informer cache (conversion can mutate the object)
 	hpav1 := hpav1Shared.DeepCopy()
 	// then, convert to autoscaling/v2, which makes our lives easier when calculating metrics
+	// 将hpa对象从v1版本转换为autoscaling/v2版本 后期所有操作都是对autoscaling/v2版本进行操作
 	hpaRaw, err := unsafeConvertToVersionVia(hpav1, autoscalingv2.SchemeGroupVersion)
 	if err != nil {
 		a.eventRecorder.Event(hpav1, v1.EventTypeWarning, "FailedConvertHPA", err.Error())
@@ -552,7 +563,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 	hpaStatusOriginal := hpa.Status.DeepCopy()
 
 	reference := fmt.Sprintf("%s/%s/%s", hpa.Spec.ScaleTargetRef.Kind, hpa.Namespace, hpa.Spec.ScaleTargetRef.Name)
-
+	// 根据apiversion 解析为groupversion
 	targetGV, err := schema.ParseGroupVersion(hpa.Spec.ScaleTargetRef.APIVersion)
 	if err != nil {
 		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
@@ -573,7 +584,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		a.updateStatusIfNeeded(hpaStatusOriginal, hpa)
 		return fmt.Errorf("unable to determine resource for scale target reference: %v", err)
 	}
-
+	// 根据mappings获取scale对象
 	scale, targetGR, err := a.scaleForResourceMappings(hpa.Namespace, hpa.Spec.ScaleTargetRef.Name, mappings)
 	if err != nil {
 		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
@@ -582,7 +593,9 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		return fmt.Errorf("failed to query scale subresource for %s: %v", reference, err)
 	}
 	setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, "SucceededGetScale", "the HPA controller was able to get the target's current scale")
+	// 当前副本数
 	currentReplicas := scale.Spec.Replicas
+	// 记录时间
 	a.recordInitialRecommendation(currentReplicas, key)
 
 	var (
@@ -590,10 +603,10 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		metricDesiredReplicas int32
 		metricName            string
 	)
-
+	// 期望副本数
 	desiredReplicas := int32(0)
 	rescaleReason := ""
-
+	// 最小副本数 如果没有设置 默认为1
 	var minReplicas int32
 
 	if hpa.Spec.MinReplicas != nil {
@@ -604,20 +617,24 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 	}
 
 	rescale := true
-
+	// 不进行scale操作
 	if scale.Spec.Replicas == 0 && minReplicas != 0 {
 		// Autoscaling is disabled for this resource
 		desiredReplicas = 0
 		rescale = false
 		setCondition(hpa, autoscalingv2.ScalingActive, v1.ConditionFalse, "ScalingDisabled", "scaling is disabled since the replica count of the target is zero")
 	} else if currentReplicas > hpa.Spec.MaxReplicas {
+		// 当前副本超过hpa的Spec.MaxReplicas
 		rescaleReason = "Current number of replicas above Spec.MaxReplicas"
 		desiredReplicas = hpa.Spec.MaxReplicas
 	} else if currentReplicas < minReplicas {
+		// 当前副本低于hpa的Spec.MaxReplicas
 		rescaleReason = "Current number of replicas below Spec.MinReplicas"
 		desiredReplicas = minReplicas
 	} else {
+		// 如果当前副本数在Min < 当前副本数 < Max 之间 根据metric指标数据进行计算得到期望副本数
 		var metricTimestamp time.Time
+		// 根据metric指标数据进行计算得到期望副本数
 		metricDesiredReplicas, metricName, metricStatuses, metricTimestamp, err = a.computeReplicasForMetrics(hpa, scale, hpa.Spec.Metrics)
 		if err != nil {
 			a.setCurrentReplicasInStatus(hpa, currentReplicas)
@@ -631,6 +648,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		klog.V(4).Infof("proposing %v desired replicas (based on %s from %s) for %s", metricDesiredReplicas, metricName, metricTimestamp, reference)
 
 		rescaleMetric := ""
+		// 如果计算出的副本数大于期望副本数 那么将计算出的副本数作为期望副本数
 		if metricDesiredReplicas > desiredReplicas {
 			desiredReplicas = metricDesiredReplicas
 			rescaleMetric = metricName
@@ -641,15 +659,18 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		if desiredReplicas < currentReplicas {
 			rescaleReason = "All metrics below target"
 		}
+		// 判断是否定义Behavior
 		if hpa.Spec.Behavior == nil {
 			desiredReplicas = a.normalizeDesiredReplicas(hpa, key, currentReplicas, desiredReplicas, minReplicas)
 		} else {
 			desiredReplicas = a.normalizeDesiredReplicasWithBehaviors(hpa, key, currentReplicas, desiredReplicas, minReplicas)
 		}
+		// 如果期望副本数和当前副本数不想等 那么需要rescale
 		rescale = desiredReplicas != currentReplicas
 	}
 
 	if rescale {
+		// 更新scale
 		scale.Spec.Replicas = desiredReplicas
 		_, err = a.scaleNamespacer.Scales(hpa.Namespace).Update(context.TODO(), targetGR, scale, metav1.UpdateOptions{})
 		if err != nil {
@@ -1053,6 +1074,7 @@ func (a *HorizontalController) scaleForResourceMappings(namespace, name string, 
 	var firstErr error
 	for i, mapping := range mappings {
 		targetGR := mapping.Resource.GroupResource()
+		// 获取scale
 		scale, err := a.scaleNamespacer.Scales(namespace).Get(context.TODO(), targetGR, name, metav1.GetOptions{})
 		if err == nil {
 			return scale, targetGR, nil

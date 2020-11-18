@@ -38,12 +38,12 @@ func startHPAController(ctx ControllerContext) (http.Handler, bool, error) {
 	if !ctx.AvailableResources[schema.GroupVersionResource{Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"}] {
 		return nil, false, nil
 	}
-	// 新版本可以使用自定义metric 如果开启了这项 那么使用startHPAControllerWithRESTClient
+	// 新版本使用restful metric api 来收集metric指标数据进行scale
 	if ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerUseRESTClients {
 		// use the new-style clients if support for custom metrics is enabled
 		return startHPAControllerWithRESTClient(ctx)
 	}
-	// 老版本
+	// 老版本使用heapster来收集metric指标数据进行scale
 	return startHPAControllerWithLegacyClient(ctx)
 }
 
@@ -58,7 +58,7 @@ func startHPAControllerWithRESTClient(ctx ControllerContext) (http.Handler, bool
 		apiVersionsGetter,
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod.Duration,
 		ctx.Stop)
-
+	// 创建访问metric server的client
 	metricsClient := metrics.NewRESTMetricsClient(
 		resourceclient.NewForConfigOrDie(clientConfig),
 		custom_metrics.NewForConfig(clientConfig, ctx.RESTMapper, apiVersionsGetter),
@@ -82,6 +82,7 @@ func startHPAControllerWithLegacyClient(ctx ControllerContext) (http.Handler, bo
 }
 
 func startHPAControllerWithMetricsClient(ctx ControllerContext, metricsClient metrics.MetricsClient) (http.Handler, bool, error) {
+	// 无论新版本/旧版本都会调用此方法
 	hpaClient := ctx.ClientBuilder.ClientOrDie("horizontal-pod-autoscaler")
 	hpaClientConfig := ctx.ClientBuilder.ConfigOrDie("horizontal-pod-autoscaler")
 
@@ -92,7 +93,7 @@ func startHPAControllerWithMetricsClient(ctx ControllerContext, metricsClient me
 	if err != nil {
 		return nil, false, err
 	}
-
+	// 创建 hpa controller并且运行
 	go podautoscaler.NewHorizontalController(
 		hpaClient.CoreV1(),
 		scaleClient,
@@ -101,7 +102,9 @@ func startHPAControllerWithMetricsClient(ctx ControllerContext, metricsClient me
 		metricsClient,
 		ctx.InformerFactory.Autoscaling().V1().HorizontalPodAutoscalers(),
 		ctx.InformerFactory.Core().V1().Pods(),
+		// 周期性检测 默认为30秒
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod.Duration,
+		// 缩容冷却时间 表示从上一次缩容结束后，多久以后可以再次执行扩容，默认时间为5分钟
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerDownscaleStabilizationWindow.Duration,
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerTolerance,
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerCPUInitializationPeriod.Duration,
