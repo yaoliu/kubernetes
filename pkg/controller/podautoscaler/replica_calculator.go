@@ -150,11 +150,12 @@ func (c *ReplicaCalculator) GetResourceReplicas(currentReplicas int32, targetUti
 // GetRawResourceReplicas calculates the desired replica count based on a target resource utilization (as a raw milli-value)
 // for pods matching the given selector in the given namespace, and the current replica count
 func (c *ReplicaCalculator) GetRawResourceReplicas(currentReplicas int32, targetUtilization int64, resource v1.ResourceName, namespace string, selector labels.Selector) (replicaCount int32, utilization int64, timestamp time.Time, err error) {
+	// 根据resourceName、namespace、selector选择器,获取metric指标数据
 	metrics, timestamp, err := c.metricsClient.GetResourceMetric(resource, namespace, selector)
 	if err != nil {
 		return 0, 0, time.Time{}, fmt.Errorf("unable to get metrics for resource %s: %v", resource, err)
 	}
-
+	// 计算
 	replicaCount, utilization, err = c.calcPlainMetricReplicas(metrics, currentReplicas, targetUtilization, namespace, selector, resource)
 	return replicaCount, utilization, timestamp, err
 }
@@ -174,7 +175,7 @@ func (c *ReplicaCalculator) GetMetricReplicas(currentReplicas int32, targetUtili
 
 // calcPlainMetricReplicas calculates the desired replicas for plain (i.e. non-utilization percentage) metrics.
 func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMetricsInfo, currentReplicas int32, targetUtilization int64, namespace string, selector labels.Selector, resource v1.ResourceName) (replicaCount int32, utilization int64, err error) {
-
+	// 根据选择获取pod列表
 	podList, err := c.podLister.Pods(namespace).List(selector)
 	if err != nil {
 		return 0, 0, fmt.Errorf("unable to get pods while calculating replica count: %v", err)
@@ -183,8 +184,9 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 	if len(podList) == 0 {
 		return 0, 0, fmt.Errorf("no pods returned by selector while calculating replica count")
 	}
-
+	// 对pod进行分类 得到 已就绪pod数量，未就绪及不在范围内的pod，不存在mertic的pod
 	readyPodCount, ignoredPods, missingPods := groupPods(podList, metrics, resource, c.cpuInitializationPeriod, c.delayOfInitialReadinessStatus)
+	// 从mertic指标数据里移除未就绪及不在范围内的pod
 	removeMetricsForPods(metrics, ignoredPods)
 
 	if len(metrics) == 0 {
@@ -367,6 +369,9 @@ func (c *ReplicaCalculator) GetExternalPerPodMetricReplicas(statusReplicas int32
 }
 
 func groupPods(pods []*v1.Pod, metrics metricsclient.PodMetricsInfo, resource v1.ResourceName, cpuInitializationPeriod, delayOfInitialReadinessStatus time.Duration) (readyPodCount int, ignoredPods sets.String, missingPods sets.String) {
+	// 对pod进行分组 返回 ready pod数量，ignoredPods missingPods
+	// missing存放metric不存在的pod
+	// ignored存放pod.status.phase = Pending状态的pod
 	missingPods = sets.NewString()
 	ignoredPods = sets.NewString()
 	for _, pod := range pods {
@@ -374,17 +379,22 @@ func groupPods(pods []*v1.Pod, metrics metricsclient.PodMetricsInfo, resource v1
 			continue
 		}
 		// Pending pods are ignored.
+		// pending状态的pod加入ignored
 		if pod.Status.Phase == v1.PodPending {
+
 			ignoredPods.Insert(pod.Name)
 			continue
 		}
 		// Pods missing metrics.
+		// 不存在mertic里的pod加入missing
 		metric, found := metrics[pod.Name]
 		if !found {
 			missingPods.Insert(pod.Name)
 			continue
 		}
 		// Unready pods are ignored.
+		// 判断如果resource == cpu 检查pod是否已经处于reday状态 如果没有处于ready状态 并且pod还没创建出来  这个pod需要忽略 加入ignoredPod里
+		// 各种忽略
 		if resource == v1.ResourceCPU {
 			var ignorePod bool
 			_, condition := podutil.GetPodCondition(&pod.Status, v1.PodReady)

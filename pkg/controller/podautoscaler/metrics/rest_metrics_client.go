@@ -50,8 +50,11 @@ func NewRESTMetricsClient(resourceClient resourceclient.PodMetricsesGetter, cust
 // metrics from both the resource metrics API and the
 // custom metrics API.
 type restMetricsClient struct {
+	// 内置指标client
 	*resourceMetricsClient
+	// 自定义指标client
 	*customMetricsClient
+	// 外部指标client
 	*externalMetricsClient
 }
 
@@ -63,6 +66,7 @@ type resourceMetricsClient struct {
 
 // GetResourceMetric gets the given resource metric (and an associated oldest timestamp)
 // for all pods matching the specified selector in the given namespace
+// 获取内置指标的metric信息
 func (c *resourceMetricsClient) GetResourceMetric(resource v1.ResourceName, namespace string, selector labels.Selector) (PodMetricsInfo, time.Time, error) {
 	metrics, err := c.client.PodMetricses(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
@@ -72,7 +76,7 @@ func (c *resourceMetricsClient) GetResourceMetric(resource v1.ResourceName, name
 	if len(metrics.Items) == 0 {
 		return nil, time.Time{}, fmt.Errorf("no metrics returned from resource metrics API")
 	}
-
+	// key 为 pod name value 为
 	res := make(PodMetricsInfo, len(metrics.Items))
 
 	for _, m := range metrics.Items {

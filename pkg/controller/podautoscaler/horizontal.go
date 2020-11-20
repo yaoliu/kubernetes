@@ -279,7 +279,7 @@ func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.Hori
 	invalidMetricsCount := 0
 	var invalidMetricError error
 	var invalidMetricCondition autoscalingv2.HorizontalPodAutoscalerCondition
-
+	// 遍历hpa.spec.metricspecs 根据每个metric进行计算相关副本数
 	for i, metricSpec := range metricSpecs {
 		replicaCountProposal, metricNameProposal, timestampProposal, condition, err := a.computeReplicasForMetric(hpa, metricSpec, specReplicas, statusReplicas, selector, &statuses[i])
 
@@ -451,6 +451,7 @@ func (a *HorizontalController) computeStatusForResourceMetric(currentReplicas in
 	// 根据平均值计算副本数
 	if metricSpec.Resource.Target.AverageValue != nil {
 		var rawProposal int64
+		// 使用副本计算器进行计算副本数
 		replicaCountProposal, rawProposal, timestampProposal, err := a.replicaCalc.GetRawResourceReplicas(currentReplicas, metricSpec.Resource.Target.AverageValue.MilliValue(), metricSpec.Resource.Name, hpa.Namespace, selector)
 		if err != nil {
 			condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetResourceMetric", err)
