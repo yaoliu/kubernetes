@@ -72,9 +72,9 @@ type timestampedScaleEvent struct {
 // in the system with the actual deployments/replication controllers they
 // control.
 type HorizontalController struct {
-	// 用于对scale的操作 Get/Update接口
+	// 用于对scale(子资源对象)的操作 Get/Update接口
 	scaleNamespacer scaleclient.ScalesGetter
-	// 用于对hpa的一系列操作
+	// 用于对hpa的系列操作
 	hpaNamespacer autoscalingclient.HorizontalPodAutoscalersGetter
 	mapper        apimeta.RESTMapper
 	// 副本计算器 根据metirc指标数据来计算出需要的副本数
@@ -253,7 +253,7 @@ func (a *HorizontalController) processNextWorkItem() bool {
 // computeReplicasForMetrics computes the desired number of replicas for the metric specifications listed in the HPA,
 // returning the maximum  of the computed replica counts, a description of the associated metric, and the statuses of
 // all metrics computed.
-// computeReplicasForMetrics 用来计算期望副本数 根据metric指标信息进行计算 返回最大的副本数
+// computeReplicasForMetrics 用来计算期望副本数 根据metrics指标信息进行计算 返回最大的副本数
 func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.HorizontalPodAutoscaler, scale *autoscalingv1.Scale,
 	metricSpecs []autoscalingv2.MetricSpec) (replicas int32, metric string, statuses []autoscalingv2.MetricStatus, timestamp time.Time, err error) {
 
@@ -279,8 +279,9 @@ func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.Hori
 	invalidMetricsCount := 0
 	var invalidMetricError error
 	var invalidMetricCondition autoscalingv2.HorizontalPodAutoscalerCondition
-	// 遍历hpa.spec.metricspecs 根据每个metric进行计算相关副本数
+	// 遍历hpa.spec.metrics 度量目标列表 根据每个metric度量目标进行计算相关副本数
 	for i, metricSpec := range metricSpecs {
+		// computeReplicasForMetric 根据type进行计算副本数
 		replicaCountProposal, metricNameProposal, timestampProposal, condition, err := a.computeReplicasForMetric(hpa, metricSpec, specReplicas, statusReplicas, selector, &statuses[i])
 
 		if err != nil {
@@ -290,7 +291,7 @@ func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.Hori
 			}
 			invalidMetricsCount++
 		}
-		//
+		// 记录最大所需要扩容缩容的副本数
 		if err == nil && (replicas == 0 || replicaCountProposal > replicas) {
 			timestamp = timestampProposal
 			replicas = replicaCountProposal
@@ -312,7 +313,7 @@ func (a *HorizontalController) computeReplicasForMetrics(hpa *autoscalingv2.Hori
 func (a *HorizontalController) computeReplicasForMetric(hpa *autoscalingv2.HorizontalPodAutoscaler, spec autoscalingv2.MetricSpec,
 	specReplicas, statusReplicas int32, selector labels.Selector, status *autoscalingv2.MetricStatus) (replicaCountProposal int32, metricNameProposal string,
 	timestampProposal time.Time, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
-	//根据hpa.spec.metrics[0].type
+	//根据hpa.spec.metrics[0].type来进行计算
 	switch spec.Type {
 	case autoscalingv2.ObjectMetricSourceType:
 		metricSelector, err := metav1.LabelSelectorAsSelector(spec.Object.Metric.Selector)
@@ -469,20 +470,22 @@ func (a *HorizontalController) computeStatusForResourceMetric(currentReplicas in
 		}
 		return replicaCountProposal, timestampProposal, metricNameProposal, autoscalingv2.HorizontalPodAutoscalerCondition{}, nil
 	}
-	// 根据平均使用率计算副本数
 	if metricSpec.Resource.Target.AverageUtilization == nil {
 		errMsg := "invalid resource metric source: neither a utilization target nor a value target was set"
 		err = fmt.Errorf(errMsg)
 		condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetResourceMetric", err)
 		return 0, time.Time{}, "", condition, fmt.Errorf(errMsg)
 	}
+	// 根据平均使用率计算副本数
 	targetUtilization := *metricSpec.Resource.Target.AverageUtilization
+	// 获取副本数
 	replicaCountProposal, percentageProposal, rawProposal, timestampProposal, err := a.replicaCalc.GetResourceReplicas(currentReplicas, targetUtilization, metricSpec.Resource.Name, hpa.Namespace, selector)
 	if err != nil {
 		condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetResourceMetric", err)
 		return 0, time.Time{}, "", condition, fmt.Errorf("failed to get %s utilization: %v", metricSpec.Resource.Name, err)
 	}
 	metricNameProposal = fmt.Sprintf("%s resource utilization (percentage of request)", metricSpec.Resource.Name)
+	// 更新状态
 	*status = autoscalingv2.MetricStatus{
 		Type: autoscalingv2.ResourceMetricSourceType,
 		Resource: &autoscalingv2.ResourceMetricStatus{
@@ -618,24 +621,24 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 	}
 
 	rescale := true
-	// 不进行scale操作
+	// 如果副本数为0，不进行扩容/缩容操作 那么设置期望副本数为0
 	if scale.Spec.Replicas == 0 && minReplicas != 0 {
 		// Autoscaling is disabled for this resource
 		desiredReplicas = 0
 		rescale = false
 		setCondition(hpa, autoscalingv2.ScalingActive, v1.ConditionFalse, "ScalingDisabled", "scaling is disabled since the replica count of the target is zero")
 	} else if currentReplicas > hpa.Spec.MaxReplicas {
-		// 当前副本超过hpa的Spec.MaxReplicas
+		// 如果当前副本数大于hpa最大期望副本数 那么设置期望副本数为最大期望副本数
 		rescaleReason = "Current number of replicas above Spec.MaxReplicas"
 		desiredReplicas = hpa.Spec.MaxReplicas
 	} else if currentReplicas < minReplicas {
-		// 当前副本低于hpa的Spec.MaxReplicas
+		// 如果当前副本数小于hpa最大期望副本数 那么设置期望副本数为小于期望副本数
 		rescaleReason = "Current number of replicas below Spec.MinReplicas"
 		desiredReplicas = minReplicas
 	} else {
-		// 如果当前副本数在Min < 当前副本数 < Max 之间 根据metric指标数据进行计算得到期望副本数
+		// 如果当前副本数在最小期望副本数 < 当前副本数 < 最大期望副本数
+		// 根据metrics指标数据进行计算得到期望副本数
 		var metricTimestamp time.Time
-		// 根据metric指标数据进行计算得到期望副本数
 		metricDesiredReplicas, metricName, metricStatuses, metricTimestamp, err = a.computeReplicasForMetrics(hpa, scale, hpa.Spec.Metrics)
 		if err != nil {
 			a.setCurrentReplicasInStatus(hpa, currentReplicas)
@@ -649,7 +652,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		klog.V(4).Infof("proposing %v desired replicas (based on %s from %s) for %s", metricDesiredReplicas, metricName, metricTimestamp, reference)
 
 		rescaleMetric := ""
-		// 如果计算出的副本数大于期望副本数 那么将计算出的副本数作为期望副本数
+		// 如果计算出的副本数大于期望副本数 那么设置期望副本数为计算出的副本数
 		if metricDesiredReplicas > desiredReplicas {
 			desiredReplicas = metricDesiredReplicas
 			rescaleMetric = metricName
@@ -660,13 +663,13 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		if desiredReplicas < currentReplicas {
 			rescaleReason = "All metrics below target"
 		}
-		// 判断是否定义Behavior
+		// 防止出现波动，需要一个稳定窗口，如果开启此项，会根据配置重新计算期望副本数
 		if hpa.Spec.Behavior == nil {
 			desiredReplicas = a.normalizeDesiredReplicas(hpa, key, currentReplicas, desiredReplicas, minReplicas)
 		} else {
 			desiredReplicas = a.normalizeDesiredReplicasWithBehaviors(hpa, key, currentReplicas, desiredReplicas, minReplicas)
 		}
-		// 如果期望副本数和当前副本数不想等 那么需要rescale
+		// 如果期望副本数!=当前副本数 那么需要重新scale
 		rescale = desiredReplicas != currentReplicas
 	}
 
@@ -692,8 +695,9 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		klog.V(4).Infof("decided not to scale %s to %v (last scale time was %s)", reference, desiredReplicas, hpa.Status.LastScaleTime)
 		desiredReplicas = currentReplicas
 	}
-
+	// 设置hpa状态
 	a.setStatus(hpa, currentReplicas, desiredReplicas, metricStatuses, rescale)
+	// 更新状态
 	return a.updateStatusIfNeeded(hpaStatusOriginal, hpa)
 }
 

@@ -55,12 +55,13 @@ func GetResourceUtilizationRatio(metrics PodMetricsInfo, requests map[string]int
 // and calculates the ratio of desired to actual utilization
 // (returning that and the actual utilization)
 func GetMetricUtilizationRatio(metrics PodMetricsInfo, targetUtilization int64) (utilizationRatio float64, currentUtilization int64) {
+	// 将所有metric.value加一起
 	metricsTotal := int64(0)
 	for _, metric := range metrics {
 		metricsTotal += metric.Value
 	}
-
+	// 当前利用率
 	currentUtilization = metricsTotal / int64(len(metrics))
-
+	// 当前利用率/目标利用率 当前利用率
 	return float64(currentUtilization) / float64(targetUtilization), currentUtilization
 }

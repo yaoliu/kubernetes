@@ -66,7 +66,7 @@ type resourceMetricsClient struct {
 
 // GetResourceMetric gets the given resource metric (and an associated oldest timestamp)
 // for all pods matching the specified selector in the given namespace
-// 获取内置指标的metric信息
+// 获取内置指标的metric信息 传入namespace、选择器。选择器用来匹配Pod 返回pod的metrics数据，时间戳
 func (c *resourceMetricsClient) GetResourceMetric(resource v1.ResourceName, namespace string, selector labels.Selector) (PodMetricsInfo, time.Time, error) {
 	metrics, err := c.client.PodMetricses(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
@@ -76,7 +76,7 @@ func (c *resourceMetricsClient) GetResourceMetric(resource v1.ResourceName, name
 	if len(metrics.Items) == 0 {
 		return nil, time.Time{}, fmt.Errorf("no metrics returned from resource metrics API")
 	}
-	// key 为 pod name value 为
+	// map[podName] = [podMetrics]
 	res := make(PodMetricsInfo, len(metrics.Items))
 
 	for _, m := range metrics.Items {
@@ -93,6 +93,7 @@ func (c *resourceMetricsClient) GetResourceMetric(resource v1.ResourceName, name
 		}
 
 		if !missing {
+			// res[php-apache-6d4598f787-86h77] = PodMetric{Value:1,Window:30s,Timestamp:2020-11-20 17:48:20 +0800 CST}
 			res[m.Name] = PodMetric{
 				Timestamp: m.Timestamp.Time,
 				Window:    m.Window.Duration,
