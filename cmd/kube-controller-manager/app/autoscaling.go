@@ -38,12 +38,12 @@ func startHPAController(ctx ControllerContext) (http.Handler, bool, error) {
 	if !ctx.AvailableResources[schema.GroupVersionResource{Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"}] {
 		return nil, false, nil
 	}
-	// 新版本使用restful metric api 来收集metric指标数据进行scale
+	// 新版本使用Restful Metric Api收集度量指标数据进行伸缩
 	if ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerUseRESTClients {
 		// use the new-style clients if support for custom metrics is enabled
 		return startHPAControllerWithRESTClient(ctx)
 	}
-	// 老版本使用heapster来收集metric指标数据进行scale
+	// 老版本使用Heapster收集度量指标数据进行伸缩
 	return startHPAControllerWithLegacyClient(ctx)
 }
 
@@ -58,7 +58,7 @@ func startHPAControllerWithRESTClient(ctx ControllerContext) (http.Handler, bool
 		apiVersionsGetter,
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod.Duration,
 		ctx.Stop)
-	// 创建访问metric server的client
+	// 创建访问MetricServer的Client
 	metricsClient := metrics.NewRESTMetricsClient(
 		resourceclient.NewForConfigOrDie(clientConfig),
 		custom_metrics.NewForConfig(clientConfig, ctx.RESTMapper, apiVersionsGetter),
@@ -68,9 +68,9 @@ func startHPAControllerWithRESTClient(ctx ControllerContext) (http.Handler, bool
 }
 
 func startHPAControllerWithLegacyClient(ctx ControllerContext) (http.Handler, bool, error) {
-	// 访问apiserver的client
+	// 获取访问APIServer的client
 	hpaClient := ctx.ClientBuilder.ClientOrDie("horizontal-pod-autoscaler")
-	// 访问heapster server的client
+	// 创建访问HeapsterServer的Client
 	metricsClient := metrics.NewHeapsterMetricsClient(
 		hpaClient,
 		metrics.DefaultHeapsterNamespace,
@@ -106,8 +106,11 @@ func startHPAControllerWithMetricsClient(ctx ControllerContext, metricsClient me
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod.Duration,
 		// 缩容冷却时间 表示从上一次缩容结束后，多久以后可以再次执行扩容，默认时间为5分钟
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerDownscaleStabilizationWindow.Duration,
+		// 全局配置的容忍值
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerTolerance,
+		// 默认为5分钟 用于设置Pod的初始化时间，在此时间内的Pod，CPU资源度量值将不会被采纳
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerCPUInitializationPeriod.Duration,
+		// 等待Pod到达Reday状态的延时 或者说用于设置Pod的准备时间，在此时间内的Pod都被认为未就绪状态，默认30秒
 		ctx.ComponentConfig.HPAController.HorizontalPodAutoscalerInitialReadinessDelay.Duration,
 	).Run(ctx.Stop)
 	return nil, true, nil

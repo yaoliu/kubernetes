@@ -574,6 +574,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 
 	// we compute the minimum ordinal of the target sequence for a destructive update based on the strategy.
 	// 更新策略RollingUpdate
+	// 分段更新吧
 	updateMin := 0
 	if set.Spec.UpdateStrategy.RollingUpdate != nil {
 		updateMin = int(*set.Spec.UpdateStrategy.RollingUpdate.Partition)

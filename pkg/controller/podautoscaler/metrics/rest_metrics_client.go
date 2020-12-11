@@ -77,6 +77,7 @@ func (c *resourceMetricsClient) GetResourceMetric(resource v1.ResourceName, name
 		return nil, time.Time{}, fmt.Errorf("no metrics returned from resource metrics API")
 	}
 	// map[podName] = [podMetrics]
+	// 初始化一个map 用来存放pod及pod所对应metric的映射关系
 	res := make(PodMetricsInfo, len(metrics.Items))
 
 	for _, m := range metrics.Items {
@@ -147,6 +148,7 @@ func (c *customMetricsClient) GetRawMetric(metricName string, namespace string, 
 
 // GetObjectMetric gets the given metric (and an associated timestamp) for the given
 // object in the given namespace
+// 使用自定义Metric APi获取metricName的对应值
 func (c *customMetricsClient) GetObjectMetric(metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, metricSelector labels.Selector) (int64, time.Time, error) {
 	gvk := schema.FromAPIVersionAndKind(objectRef.APIVersion, objectRef.Kind)
 	var metricValue *customapi.MetricValue
